@@ -1,0 +1,171 @@
+# YouTube Trends Platform — Cycling & Triathlon
+
+## What this is
+
+A platform that surfaces the best-performing YouTube videos in the cycling and
+triathlon sector, so marketing teams at brands in that sector can find
+inspiration and track trends.
+
+**This is a portfolio prototype for job applications, not a commercial product.**
+It exists to demonstrate three things to a prospective employer:
+
+1. Marketing thinking — the concept itself is useful to a marketing team.
+2. The ability to build software with Claude Code.
+3. The ability to use automations and databases to gather data.
+
+**Implication: scope discipline beats completeness.** Prefer the option that makes
+a better demo over the one that is more technically thorough. Anything that adds
+weeks without adding demo value should be cut.
+
+## Who I am
+
+- 5 years of professional experience in marketing.
+- New to coding. Completed Angela Yu's full-stack developer course, so the
+  fundamentals are there, but I am not a working developer.
+- Completed an n8n course; comfortable with automation concepts.
+- Never worked with Supabase before.
+
+## How to work with me
+
+- Explain the **why** behind architectural choices, not just the steps.
+- Introduce database concepts rather than assuming them.
+- Where there is a real choice to make, show me the options and their trade-offs
+  before you pick one.
+- Small steps. Don't build five files at once. One thing, then check with me.
+- Tell me directly when I'm asking for scope creep, and say what it would cost.
+- When you're unsure what I meant, ask instead of guessing.
+
+## Rules
+
+- Secrets go in `.env`. Never in committed files, never hardcoded in config.
+- `.env` must be listed in `.gitignore` before the first commit.
+- Never present estimated watch time (views × duration) as real watch time.
+- Never present the Outlier Score as a percentage.
+- Log every architectural or scoping decision in `DECISIONS.md`, with the
+  reasoning — not just what was chosen.
+
+## Locked constraints — do not re-open unless I ask
+
+These were researched and settled. If you find yourself about to suggest one of
+them, the answer is already no.
+
+- **Watch time is unavailable.** Watch time, retention, CTR and demographics sit
+  behind the YouTube Analytics API and require OAuth consent from the channel
+  owner. Impossible for channels we don't own. Dropped from the concept.
+- **The Data API has no history.** It returns a single point-in-time snapshot.
+  There is no way to recover what a video's view count was last week. This is
+  why the snapshot job must run before anything else exists.
+- **Transcripts are out of prototype scope.**
+- **The scoring spec below is locked.**
+
+## Technical constraints that affect implementation
+
+- **Quota:** 10,000 units/day, free tier. `search.list` costs 100 units per call
+  and must be avoided. Fetching a channel's uploads playlist then video details
+  costs ~1 unit per 50 items. 40 channels weekly ≈ a couple hundred units/week.
+- **Available per public video:** views, likes, comments, duration, publish date,
+  thumbnail, title, description, tags.
+- **Shorts detection:** no official API flag. Duration ≤ 3 minutes is ~95%
+  accurate. An unofficial HEAD request to `youtube.com/shorts/{video_id}` closes
+  the gap (200 = Short, 303 = not a Short).
+- **Terms of service:** YouTube's API Services Terms restrict how long API data
+  may be stored and how thumbnails must be displayed. Review before publishing
+  to a public URL.
+
+## Scope
+
+**40 channels, 4 categories of 10:** cycling brands (Canyon, Trek, Giant);
+professional triathletes (Blummenfelt, Charles-Barclay, Geens); professional
+cycling teams (Visma–Lease a Bike, Lidl-Trek, Unibet Rose Rockets); cycling
+influencers (Gerrit Knein, GCN).
+
+**Selection rule:** only channels that upload at least once per month, so every
+baseline stays statistically usable.
+
+**Collection frequency:** weekly for the prototype. Possibly daily later.
+
+**Channel list is stored as rows in a table** — adding a channel is a new row,
+never a code change.
+
+## The snapshot job — build this first
+
+Runs weekly. For all 40 channels, fetches every video published in the last 90
+days and writes one row per video per run.
+
+| Field | Purpose |
+|---|---|
+| `video_id` | Key |
+| `snapshot_date` | Key — makes it a time series |
+| `views` | Core metric |
+| `likes` | Engagement |
+| `comments` | Engagement |
+| `title` | Results view; also enables title-pattern analysis later |
+| `thumbnail_url` | Results view; also enables thumbnail analysis later |
+
+Title and thumbnail are captured on **every** run, not once — creators change
+both after publishing, and a record of those changes is itself a signal worth
+having for a marketing audience.
+
+Volume: ~400 rows/week. Trivial.
+
+## Scoring — LOCKED
+
+**Metrics:** views; engagement rate `(likes + comments) / views`; view velocity
+(views per day since publication); estimated watch time `views × duration`
+(secondary only, always labelled an estimate).
+
+**Absolute ranking:** straight ranking by the selected metric.
+
+**Relative ranking — the headline feature.** How well a video performed compared
+to what is normal *for that specific channel*. A channel averaging 2K views
+hitting 12K is far more remarkable than a channel averaging 10K hitting 12K.
+This is the product's core differentiator.
+
+```
+Outlier Score = views at ~7 days / channel baseline median
+```
+
+Baseline specification:
+
+- **Median** views of the channel's **last 15 videos**, published between **30
+  days and 24 months ago**.
+- Median, not mean — one viral video would otherwise permanently distort it.
+- **30-day floor:** videos younger than 30 days haven't finished accumulating
+  views; including them drags the median down and inflates every score.
+- **Minimum 10 videos** for a valid baseline. The once-a-month selection rule
+  means this should almost never bind.
+- Computed **separately for Shorts and long-form** — different view scales.
+- The video being scored is **excluded** from its own baseline.
+- **Recomputed weekly.**
+- **7-day measurement lag:** each weekly run scores videos published 8–14 days
+  earlier, so every video is measured with the same yardstick.
+
+**UI constraint:** the baseline uses lifetime totals of mature videos while the
+scored video is only 7 days old, so most scores land well below 1.0. Fine for
+ranking — every video in a given week is measured identically — but the number
+must **never** be shown as a percentage ("180% of normal"), because that invites
+the wrong reading. Present it as an Outlier Score and lead with the ranking.
+
+## Prototype features — must have
+
+- Filter: absolute vs relative success.
+- Filter: Shorts vs long-form.
+- Results view: top 3 videos of the week per category, each with thumbnail and
+  title.
+- "See more" to reveal #4, #5, #6 and beyond.
+- No user accounts, no login. Public and read-only.
+
+## Explicitly out of scope
+
+Transcript summaries; the "why did it work" auto-tagging layer; cross-category
+benchmarking; weekly digest email; a "how the Outlier Score works" page;
+age-matched v2 baselines; growth curves in the UI; engagement as a user-facing
+filter; daily collection; Instagram/TikTok; user accounts; more than 40 channels.
+
+These are good ideas parked deliberately, not oversights. Don't build them
+without asking.
+
+## Where things stand
+
+See `DECISIONS.md` for current state, decisions made, and open questions. Read it
+at the start of a session before proposing work.
