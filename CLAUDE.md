@@ -89,7 +89,7 @@ never a code change.
 
 ## Data model
 
-Three tables. The split follows one rule: **facts that never change are stored
+Four tables. The split follows one rule: **facts that never change are stored
 once; numbers that change are stored per week.**
 
 ### `channels` — 40 rows, changes almost never
@@ -169,6 +169,16 @@ different fixes.
 A run that completes with far fewer rows than expected must be treated as a
 failure, not a success.
 
+### Access control (RLS)
+
+Supabase exposes every table in the `public` schema through an auto-generated
+REST API. Row Level Security is enabled on all four tables with **no policies**,
+which seals them from that API completely. The collection job reaches them with
+the secret key, which bypasses RLS.
+
+When the front end is built, each table gets one policy granting `SELECT` to
+anonymous visitors — read-only public access, matching "no user accounts, no
+login". No write policy is ever added: nothing but the collection job writes.
 
 ### Rule for new fields
 
@@ -247,7 +257,7 @@ the wrong reading. Present it as an Outlier Score and lead with the ranking.
 ## Explicitly out of scope
 
 Transcript summaries; the "why did it work" auto-tagging layer; cross-category
-benchmarking; weekly digest email weekly digest email (planned for n8n, post-prototype);; a "how the Outlier Score works" page;
+benchmarking; weekly digest email (planned for n8n, post-prototype);; a "how the Outlier Score works" page;
 age-matched v2 baselines; growth curves in the UI; engagement as a user-facing
 filter; daily collection; Instagram/TikTok; user accounts; more than 40 channels.
 
@@ -263,17 +273,33 @@ at the start of a session before proposing work.
 
 ## Stack
 
-- **Database:** Supabase (Postgres). Three tables — see Data model above.
+## Stack
+
+- **Database:** Supabase (Postgres), free tier, EU region. Four tables — see
+  Data model above.
 - **Collection job:** Python script, run weekly by GitHub Actions.
+- **Keep-alive:** a second GitHub Actions workflow, every 2–3 days, issuing one
+  trivial read against Supabase. Free-tier projects pause after 7 days of
+  inactivity, and the weekly collection job alone sits exactly on that boundary.
 - **Monitoring:** Healthchecks.io dead man's switch, pinged on successful
   completion.
 - **YouTube access:** API key, not OAuth. Restricted to YouTube Data API v3.
 - **Secrets:** `.env` locally, GitHub Secrets in Actions. Never in committed
-  files. The key is read from the environment variable `YOUTUBE_API_KEY` — the
-  script must read it from there and never contain a key literal.
+  files, never hardcoded.
 
-Front-end stack and hosting are deliberately undecided — the collection job
-doesn't depend on them.
+| Variable | What it is |
+|---|---|
+| `YOUTUBE_API_KEY` | YouTube Data API v3 key |
+| `SUPABASE_URL` | Supabase project API URL |
+| `SUPABASE_SECRET_KEY` | Supabase secret key (`sb_secret_...`) |
+
+Supabase now issues `sb_publishable_...` and `sb_secret_...` keys in place of the
+legacy `anon` and `service_role` JWTs. The collection job uses the **secret**
+key, which bypasses Row Level Security and must only ever run on a machine we
+control. The front end, when it exists, uses the **publishable** key. The secret
+key never appears in front-end code.
+
+Front-end stack and hosting are deliberately undecided — the collection job doesn't depend on them.
 
 ## Collection job requirements
 

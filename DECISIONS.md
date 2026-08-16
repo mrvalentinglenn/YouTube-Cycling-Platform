@@ -162,9 +162,7 @@ Nothing in the prototype needs identity, and auth is pure scope cost.
   HEAD request to `youtube.com/shorts/{video_id}` closes the gap but is
   unofficial and adds a request per video. Undecided — start with duration, add
   the HEAD check only if misclassification shows up in practice.
-- **How does the weekly job run?** n8n or code. n8n leans on existing experience
-  and demonstrates the automation skill directly; code may be more robust and
-  easier to version-control. Undecided.
+
 - **Hosting** — not decided.
 - **The final list of 40 specific channels** — not yet compiled.
 - **YouTube API Terms of Service** — rules on data retention and thumbnail
