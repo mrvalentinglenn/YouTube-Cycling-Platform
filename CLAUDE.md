@@ -101,7 +101,7 @@ once; numbers that change are stored per week.**
 | `category` | text | brands \| triathletes \| teams \| influencers |
 | `added_at` | timestamptz | When we started tracking |
 
-Adding a channel is a new row here — never a code change.
+Adding a channel is a new row here — never a code change. The CHECK constraint exists because these rows are inserted by hand: a typo like 'brand' raises no error on its own, it just removes that channel from every category query silently.
 
 ### `videos` — one row per video, immutable facts
 
@@ -124,8 +124,8 @@ present.
 | `video_id` | text, FK → videos | Part of composite PK |
 | `snapshot_date` | date | Part of composite PK |
 | `views` | bigint | Core metric |
-| `likes` | integer | Engagement |
-| `comments` | integer | Engagement |
+| `likes` | integer, nullable | Engagement |
+| `comments` | integer, nullable | Engagement |
 | `title` | text | Captured every run — creators change titles |
 | `thumbnail_url` | text | Captured every run — creators change thumbnails |
 
@@ -148,7 +148,7 @@ that a failed or partial run is visible after the fact.
 
 | Column | Type | Notes |
 |---|---|---|
-| `id` | bigserial, PK | |
+| `id` | bigint, identity, PK | Identity rather than bigserial — no separate sequence to grant |
 | `started_at` | timestamptz | Written when the run begins |
 | `finished_at` | timestamptz, null | Written on completion; stays null if the job dies |
 | `status` | text | `running` \| `success` \| `failed` |

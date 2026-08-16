@@ -7,11 +7,25 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ---
 
+
 ## Current state
 
-*Last updated: 2026-08-15*
+*Last updated: 2026-08-16*
 
-Nothing built yet.
+Google Cloud project created, YouTube API key issued and restricted to Data API
+v3. Supabase project created on the free tier in an EU region, with
+"Automatically expose new tables" off and automatic RLS on. Schema applied from
+`sql/schema.sql`; all four tables live, verified with a test row and a
+deliberately failing insert against the category CHECK constraint.
+
+Nothing else built — no collection script, no GitHub Actions workflows, no
+front end.
+
+**Next steps:** See `NEXT_STEPS.md`.
+
+**After that:** get the snapshot job running. It has to start collecting before
+anything else is built, because the API holds no history and every week not
+recorded is data that can never be recovered.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
@@ -22,6 +36,80 @@ recorded is data that can never be recovered.
 ---
 
 ## Decisions
+
+**2026-08-16 — Supabase free tier, EU region.**
+The 500 MB cap is irrelevant at ~400 rows/week and nothing here is
+latency-sensitive, so region is convenience rather than architecture. Two known
+costs. Free projects pause after 7 days of inactivity — addressed by the
+keep-alive workflow below. And the free tier has no backup retention: a paused
+project keeps its data, so pausing is recoverable, but deletion is not and
+snapshot history cannot be re-collected. Worth a periodic export once the table
+holds real history; nothing to lose yet.
+
+**2026-08-16 — Keep-alive workflow to prevent free-tier pausing.**
+The collection job runs weekly and Supabase pauses after 7 days of inactivity,
+so the only thing touching the database sits exactly on the pause boundary. A
+paused project fails the next run, the dead man's switch fires, and a week of
+irrecoverable snapshots is lost before anyone restores it. A second GitHub
+Actions workflow doing one trivial read every 2–3 days removes the boundary
+condition for about fifteen minutes of work. Same principle as the n8n
+decision: the irrecoverable job must not depend on infrastructure that can
+lapse. Note that Actions disables scheduled workflows after 60 days of repo
+inactivity, which would silence the keep-alive too — the dead man's switch
+remains the backstop for that.
+
+**2026-08-16 — Access control in two explicit layers: grants and RLS.**
+Project created with "Automatically expose new tables" off, so no role holds
+any privilege on a new table until granted. `schema.sql` grants SELECT, INSERT,
+UPDATE on all four tables to `service_role` and nothing to `anon` or
+`authenticated`. RLS is enabled on all four with no policies as an independent
+second layer, so loosening a grant later cannot by itself expose rows. The two
+fail differently and that distinction matters when debugging: a missing grant
+returns error 42501 "permission denied for table"; an RLS block returns an
+empty result set with no error. Supabase is making explicit grants the default
+for all projects, so starting here means nothing breaks under us later.
+
+**2026-08-16 — Supabase new-format API keys; secret key for the collection job.**
+Supabase has replaced the legacy `anon` and `service_role` JWTs with
+`sb_publishable_...` and `sb_secret_...`, and new projects no longer issue the
+legacy pair. The job runs on machines we control and must write, so it uses the
+secret key. Stored as `SUPABASE_SECRET_KEY` rather than `SUPABASE_SERVICE_KEY`
+so the variable name matches the key it holds — it gets copied into GitHub
+Secrets and the Python client, and renaming across three places later is
+avoidable churn.
+
+**2026-08-16 — `job_runs.id` is an identity column, not `bigserial`.**
+`bigserial` silently creates a separate sequence object, and sequence
+privileges are granted separately from table privileges. With auto-expose off,
+`service_role` could hold INSERT on the table and still fail with "permission
+denied for sequence job_runs_id_seq" — an error naming an object that appears
+nowhere in the schema file, thrown by the first write of the job, inside the
+very table built to record failures. An identity column's sequence is owned by
+the table, so the INSERT grant covers it. Removes the hidden dependency rather
+than papering over it with an extra grant.
+
+**2026-08-16 — `likes` and `comments` nullable; `views` not.**
+The YouTube API omits `likeCount` when a creator hides likes and `commentCount`
+when comments are disabled — common on brand product launches, which is
+squarely in this dataset. NOT NULL would kill the run. Writing 0 instead would
+be worse: it records a disabled feature as an absence of engagement and drags
+down every engagement-rate average silently. NULL is the honest value, and
+Postgres arithmetic propagates it, so such videos drop out of an engagement
+ranking rather than appearing artificially poor.
+
+**2026-08-16 — CHECK constraints on `channels.category` and `job_runs.status`.**
+The 40 channel rows are inserted by hand. A typo like 'brand' for 'brands'
+raises no error — the channel simply never appears in any category query, and
+the gap surfaces weeks later as a thin top-3 list. A CHECK constraint converts
+a silent data-quality bug into an immediate insert failure. Same reasoning
+applied to `status`, though the risk is lower there since only code writes it.
+
+**2026-08-16 — Shorts detection by duration first; HEAD check only if needed.**
+Duration ≤ 3 minutes is ~95% accurate and free. The HEAD request to
+`youtube.com/shorts/{video_id}` closes the gap but is unofficial and adds one
+request per video. Starting with duration. `is_short` is stored on the video
+row, so a later correction is an update to one column rather than a change to
+every query.
 
 **2026-08-16 — YouTube access via a restricted API key, not OAuth.**
 OAuth answers "which user is this and what have they consented to" and is
@@ -158,20 +246,13 @@ Nothing in the prototype needs identity, and auth is pure scope cost.
   scheduled job, or on read. Not urgent; the snapshot job doesn't depend on it.
 - **Front-end stack and hosting — not yet designed.** Deliberately deferred:
   the snapshot job doesn't depend on them, and deciding now would be premature.
-- **Shorts detection method.** Duration ≤ 3 min is ~95% accurate and free. The
-  HEAD request to `youtube.com/shorts/{video_id}` closes the gap but is
-  unofficial and adds a request per video. Undecided — start with duration, add
-  the HEAD check only if misclassification shows up in practice.
-
-- **Hosting** — not decided.
 - **The final list of 40 specific channels** — not yet compiled.
 - **YouTube API Terms of Service** — rules on data retention and thumbnail
   display need reviewing before anything goes to a public URL.
-
-
 ---
 
 ## Rejected — and why
+
 
 **n8n for the snapshot job.**
 See the 2026-08-15 decision. Not rejected on capability — rejected because the
@@ -208,3 +289,18 @@ table holds several months of data. Worth being able to explain in an interview.
 **OAuth for YouTube access.**
 Only needed for private data belonging to a channel owner. The platform reads
 public videos exclusively. Rejected as overhead, not as unavailable.
+
+**Supabase Pro to remove the inactivity pause.**
+$25/month solves the pausing problem outright, but a keep-alive workflow solves
+it for free and no other free-tier limit is in sight at this volume. No demo
+value in paying.
+
+**Twice-weekly collection as a pause workaround.**
+Would keep the project awake as a side effect, but changes what "this week's
+snapshot" means and complicates the 8–14 day scoring window for no analytical
+gain at prototype scale. Scope creep.
+
+**`IF NOT EXISTS` on the CREATE TABLE statements in `schema.sql`.**
+Would make the script safe to re-run, but silently. A schema file that no-ops
+is how you come to believe a change was applied when it wasn't. Re-running
+should fail loudly.
