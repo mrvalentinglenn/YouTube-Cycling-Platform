@@ -87,6 +87,95 @@ baseline stays statistically usable.
 **Channel list is stored as rows in a table** — adding a channel is a new row,
 never a code change.
 
+## Data model
+
+Three tables. The split follows one rule: **facts that never change are stored
+once; numbers that change are stored per week.**
+
+### `channels` — 40 rows, changes almost never
+
+| Column | Type | Notes |
+|---|---|---|
+| `channel_id` | text, PK | YouTube's channel ID |
+| `name` | text | Human-readable, e.g. "Canyon" |
+| `category` | text | brands \| triathletes \| teams \| influencers |
+| `added_at` | timestamptz | When we started tracking |
+
+Adding a channel is a new row here — never a code change.
+
+### `videos` — one row per video, immutable facts
+
+| Column | Type | Notes |
+|---|---|---|
+| `video_id` | text, PK | YouTube's video ID |
+| `channel_id` | text, FK → channels | Whose video it is |
+| `published_at` | timestamptz | Drives the 90-day window, view velocity, 7-day lag |
+| `duration_seconds` | integer | Shorts heuristic + estimated watch time |
+| `is_short` | boolean | Result of the Shorts check, stored so it isn't redone |
+| `first_seen_at` | timestamptz | When the snapshot job first picked it up |
+
+Nothing here changes after insert. On each run, insert only videos not already
+present.
+
+### `video_snapshots` — one row per video per run, the time series
+
+| Column | Type | Notes |
+|---|---|---|
+| `video_id` | text, FK → videos | Part of composite PK |
+| `snapshot_date` | date | Part of composite PK |
+| `views` | bigint | Core metric |
+| `likes` | integer | Engagement |
+| `comments` | integer | Engagement |
+| `title` | text | Captured every run — creators change titles |
+| `thumbnail_url` | text | Captured every run — creators change thumbnails |
+
+Composite primary key `(video_id, snapshot_date)` — one row per video per run,
+and re-running the same day overwrites rather than duplicates.
+
+~400 new rows per week. This table only grows.
+
+### How they join
+
+`channels.channel_id` → `videos.channel_id` → `video_snapshots.video_id`.
+
+"Top 3 brand videos this week" = filter `channels` by category, follow to their
+`videos`, join this week's `video_snapshots`.
+
+### `job_runs` — one row per execution, operational log
+
+Not part of the analytical model. Does not join to the other tables. Exists so
+that a failed or partial run is visible after the fact.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | bigserial, PK | |
+| `started_at` | timestamptz | Written when the run begins |
+| `finished_at` | timestamptz, null | Written on completion; stays null if the job dies |
+| `status` | text | `running` \| `success` \| `failed` |
+| `channels_processed` | integer | Expect 40 |
+| `snapshots_written` | integer | Expect ~400 |
+| `error_message` | text, null | Populated on failure |
+
+**Write pattern:** insert a row with `status = 'running'` at the start, update it
+at the end. The final update must run in a `finally` block, so a run that fails
+predictably — API error, network timeout, bad credentials — still records
+`status = 'failed'` and an `error_message` rather than dying silently.
+
+A permanent `running` row therefore means something worse: the process was
+killed outright and never reached its own error handling. Distinguishing "the job
+failed" from "the job vanished" matters, because they have different causes and
+different fixes.
+
+A run that completes with far fewer rows than expected must be treated as a
+failure, not a success.
+
+
+### Rule for new fields
+
+Before adding a column, ask whether the value can change after a video is
+published. If no, it belongs in `videos`. If yes, it belongs in
+`video_snapshots`. Don't duplicate immutable facts into the snapshot table.
+
 ## The snapshot job — build this first
 
 Runs weekly. For all 40 channels, fetches every video published in the last 90
@@ -158,7 +247,7 @@ the wrong reading. Present it as an Outlier Score and lead with the ranking.
 ## Explicitly out of scope
 
 Transcript summaries; the "why did it work" auto-tagging layer; cross-category
-benchmarking; weekly digest email; a "how the Outlier Score works" page;
+benchmarking; weekly digest email weekly digest email (planned for n8n, post-prototype);; a "how the Outlier Score works" page;
 age-matched v2 baselines; growth curves in the UI; engagement as a user-facing
 filter; daily collection; Instagram/TikTok; user accounts; more than 40 channels.
 
@@ -169,3 +258,35 @@ without asking.
 
 See `DECISIONS.md` for current state, decisions made, and open questions. Read it
 at the start of a session before proposing work.
+
+`NEXT_STEPS.md` holds the working checklist for what to do next.
+
+## Stack
+
+- **Database:** Supabase (Postgres). Three tables — see Data model above.
+- **Collection job:** Python script, run weekly by GitHub Actions.
+- **Monitoring:** Healthchecks.io dead man's switch, pinged on successful
+  completion.
+- **Secrets:** `.env` locally, GitHub Secrets in Actions. Never in committed
+  files.
+
+Front-end stack and hosting are deliberately undecided — the collection job
+doesn't depend on them.
+
+## Collection job requirements
+
+The weekly job must:
+
+1. Read the channel list from the `channels` table — never from a hardcoded list.
+2. For each channel, fetch the uploads playlist, then video details in batches
+   of 50. Never use `search.list` (100 quota units per call).
+3. Filter to videos published in the last 90 days.
+4. Insert any video not already in `videos`. Never update existing rows there.
+5. Upsert this week's numbers into `video_snapshots` on
+   `(video_id, snapshot_date)`, so a re-run on the same day overwrites rather
+   than duplicating.
+6. Write a row to `job_runs` recording start, finish, status, row count, and any
+   error.
+7. Ping the Healthchecks.io URL as the final action, only on full success.
+
+Fail loudly. A run that writes 40 rows instead of 400 must not report success.
