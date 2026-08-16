@@ -169,16 +169,31 @@ different fixes.
 A run that completes with far fewer rows than expected must be treated as a
 failure, not a success.
 
-### Access control (RLS)
+
+
+### Access control — two layers
 
 Supabase exposes every table in the `public` schema through an auto-generated
-REST API. Row Level Security is enabled on all four tables with **no policies**,
-which seals them from that API completely. The collection job reaches them with
-the secret key, which bypasses RLS.
+REST API. Two independent mechanisms control access to it, and both must be set
+deliberately:
 
-When the front end is built, each table gets one policy granting `SELECT` to
-anonymous visitors — read-only public access, matching "no user accounts, no
-login". No write policy is ever added: nothing but the collection job writes.
+**Grants** decide whether a role may touch a table at all. This project was
+created with "Automatically expose new tables" turned OFF, so new tables start
+with no privileges for anyone. `schema.sql` grants `SELECT`, `INSERT`, `UPDATE`
+on all four tables to `service_role` — the role the collection job
+authenticates as. No `DELETE`: nothing in the job removes rows. Nothing is
+granted to `anon` or `authenticated`.
+
+**Row Level Security** decides which rows a role that already has a grant may
+see. Enabled on all four tables with no policies, which seals them from the
+Data API. The secret key bypasses RLS, so the collection job is unaffected.
+
+If a query ever fails with `42501 permission denied for table`, that is the
+grant layer, not RLS — RLS failures return empty results, not errors.
+
+When the front end is built it gets both layers opened, narrowly: a `SELECT`
+grant plus a `SELECT` policy for `anon`. No write access is ever granted to
+anything but the collection job.
 
 ### Rule for new fields
 
@@ -257,7 +272,7 @@ the wrong reading. Present it as an Outlier Score and lead with the ranking.
 ## Explicitly out of scope
 
 Transcript summaries; the "why did it work" auto-tagging layer; cross-category
-benchmarking; weekly digest email (planned for n8n, post-prototype);; a "how the Outlier Score works" page;
+benchmarking; weekly digest email (planned for n8n, post-prototype); a "how the Outlier Score works" page;
 age-matched v2 baselines; growth curves in the UI; engagement as a user-facing
 filter; daily collection; Instagram/TikTok; user accounts; more than 40 channels.
 
@@ -271,7 +286,6 @@ at the start of a session before proposing work.
 
 `NEXT_STEPS.md` holds the working checklist for what to do next.
 
-## Stack
 
 ## Stack
 
