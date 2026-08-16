@@ -23,6 +23,22 @@ recorded is data that can never be recovered.
 
 ## Decisions
 
+**2026-08-16 — YouTube access via a restricted API key, not OAuth.**
+OAuth answers "which user is this and what have they consented to" and is
+required only for private channel data. Everything the platform reads — views,
+likes, comments, titles, thumbnails on public videos — is public, so an API key
+is sufficient and OAuth would add a consent screen and Google verification for
+no gain. Key is restricted to YouTube Data API v3 only, so a leak cannot be used
+against any other API later enabled in the project. Application restrictions
+left at None deliberately: GitHub Actions runners get a fresh IP each run, so IP
+allow-listing would mean allow-listing most of Azure without meaningfully
+narrowing access. Protection therefore rests on the API restriction plus `.env`
+discipline.
+
+**2026-08-16 — Dedicated Google Cloud project (`youtube-cycling-app`).**
+Quota is tracked per project. Keeping this separate from the existing n8n course
+project means an experiment there can never consume the collection job's quota.
+
 **2026-08-15 — `job_runs` defined as a fourth table, separate from the
 analytical model.**
 Referenced in the collection requirements and the monitoring decision but never
@@ -190,3 +206,7 @@ Comparing 7-day views against the median *7-day views* of a channel's past
 videos would remove the scale mismatch entirely. Impossible at launch because
 the historical snapshots don't exist yet. Becomes possible once the snapshot
 table holds several months of data. Worth being able to explain in an interview.
+
+**OAuth for YouTube access.**
+Only needed for private data belonging to a channel owner. The platform reads
+public videos exclusively. Rejected as overhead, not as unavailable.

@@ -267,8 +267,10 @@ at the start of a session before proposing work.
 - **Collection job:** Python script, run weekly by GitHub Actions.
 - **Monitoring:** Healthchecks.io dead man's switch, pinged on successful
   completion.
+- **YouTube access:** API key, not OAuth. Restricted to YouTube Data API v3.
 - **Secrets:** `.env` locally, GitHub Secrets in Actions. Never in committed
-  files.
+  files. The key is read from the environment variable `YOUTUBE_API_KEY` — the
+  script must read it from there and never contain a key literal.
 
 Front-end stack and hosting are deliberately undecided — the collection job
 doesn't depend on them.
