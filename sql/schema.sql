@@ -17,6 +17,8 @@ CREATE TABLE channels (
     -- of 'brands') would silently exclude that channel from every category
     -- query rather than raising an error.
     category text NOT NULL CHECK (category IN ('brands', 'triathletes', 'teams', 'influencers')),
+    -- Nullable: fetched from the API on collection runs, not entered by hand.
+    avatar_url text,
     added_at timestamptz NOT NULL DEFAULT now()
 );
 
