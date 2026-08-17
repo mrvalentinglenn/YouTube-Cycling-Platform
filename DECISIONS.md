@@ -10,7 +10,7 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-16*
+*Last updated: 2026-08-17*
 
 Google Cloud project created, YouTube API key issued and restricted to Data API
 v3. Supabase project created on the free tier in an EU region, with
@@ -18,14 +18,12 @@ v3. Supabase project created on the free tier in an EU region, with
 `sql/schema.sql`; all four tables live, verified with a test row and a
 deliberately failing insert against the category CHECK constraint.
 
+Schema audited against the prototype's UI requirements — every field the
+results view needs is covered. One addition pending: `channels.avatar_url`.
+
 Nothing else built — no collection script, no GitHub Actions workflows, no
 front end.
 
-**Next steps:** See `NEXT_STEPS.md`.
-
-**After that:** get the snapshot job running. It has to start collecting before
-anything else is built, because the API holds no history and every week not
-recorded is data that can never be recovered.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
@@ -36,6 +34,70 @@ recorded is data that can never be recovered.
 ---
 
 ## Decisions
+
+**2026-08-17 — One-time backfill before the first weekly run.**
+The 90-day collection window cannot feed a baseline that needs 15 videos aged
+30 days to 24 months. At launch only 8–9 videos would qualify for a weekly
+uploader and 2–3 for a monthly one, both under the minimum of 10 — the Outlier
+Score would be uncomputable for every channel on the first run. It would
+self-heal as the rolling window fed new videos in, but "several months before
+the headline feature works" is a bad position for a portfolio piece and an
+avoidable one. Backfill walks each channel's uploads playlist back ~30 videos
+and writes one snapshot each dated today. ~25 quota units, no schema change,
+reuses the collection script's own fetch-and-insert logic. Legitimate under the
+locked spec rather than a bend of it: the spec asks for lifetime totals of
+mature videos, and a snapshot taken today of a video published 14 months ago is
+exactly that.
+
+**2026-08-17 — 90-day window kept, and is not the baseline window.**
+Questioned whether it should widen to 24 months so the baseline could be built
+from ongoing collection. Rejected — see Rejected. The 90-day window governs
+which videos are *re-measured* weekly, because videos in their first 90 days
+are still moving and weekly re-measurement is what builds the growth curves.
+The baseline is a separate concern, solved by the backfill above.
+
+**2026-08-17 — 30-day floor kept for v1, and why it disappears in v2.**
+Considered lowering to 7 days on the reasoning that a two-week-old video
+already has its 7-day datapoint. True, but only under v2. The v1 baseline is
+made of *lifetime* views, and a 14-day-old video hasn't finished accumulating
+lifetime views, so it drags the median down and inflates every score on that
+channel. Under v2 the floor genuinely becomes unnecessary, because 7-day
+figures are comparable regardless of a video's current age. Same fact, opposite
+conclusion depending on which model is in force — worth remembering when v2
+lands, because the floor should then be revisited rather than carried over out
+of habit.
+
+**2026-08-17 — v1 → v2 transition is per channel and data-driven.**
+Not a release. Each channel switches to the age-matched baseline once the
+snapshot table holds 10 of its videos measured at ~7 days, which the weekly job
+produces as a by-product. Until then the front end shows a Provisional Score
+label. The label is permanent product furniture, not a temporary patch: any
+channel added later starts thin too.
+
+**2026-08-17 — Provisional Score label rather than hiding thin baselines.**
+A baseline resting on 4 videos is worth showing with a caveat rather than
+suppressing. Wording: "Provisional Score — baseline drawn from a limited number
+of reference videos." States the condition and what it means for the reader
+without apologising for it.
+
+**2026-08-17 — Schema audited against UI requirements before building the job.**
+An uncollected field is unrecoverable for videos already published — the same
+asymmetry as the missing-history problem — so the check had to happen before
+the first run, not after. Every field the prototype results view needs is
+already covered: absolute ranking from `video_snapshots`, Outlier Score
+computed from the same, filters from `videos.is_short` and `channels.category`,
+display from stored title and thumbnail, estimated watch time and formatted
+duration computed from `duration_seconds`. The "does this value change?" rule
+used to design the tables had already done the work. Detailed UI design
+deferred: the front-end stack is undecided, there is no real data to design
+against, and every week without collection is permanently lost.
+
+**2026-08-17 — `channels.avatar_url` added.**
+Channel avatar shown alongside each video in the results view. Stored on
+`channels` rather than per snapshot: 40 rows, changes rarely, and it is
+channel-level rather than video-level data. Not urgent in the way snapshots
+are — avatars are current-state and fetchable any day — but the column costs
+nothing to add now and avoids a migration later.
 
 **2026-08-16 — Supabase free tier, EU region.**
 The 500 MB cap is irrelevant at ~400 rows/week and nothing here is
@@ -240,16 +302,27 @@ Nothing in the prototype needs identity, and auth is pure scope cost.
 
 ---
 
+
 ## Open questions
 
+- **Backfill as a flag on the collection script, or a separate one-off script.**
+  The flag reuses the fetch-and-insert logic; a separate script is easier to
+  reason about but duplicates ~40 lines. Blocking the collection script.
+- **Failure threshold for the collection job.** "A run that writes 40 rows
+  instead of 400 must not report success" is the right instinct, but 400 is an
+  estimate that moves with upload cadence. Undefined, the threshold gets
+  invented silently at implementation time. Candidate: fail if
+  `channels_processed < 40`, or if `snapshots_written` is below 50% of the last
+  successful run.
 - **Where the scoring calculation runs** — in the collection job, as a separate
   scheduled job, or on read. Not urgent; the snapshot job doesn't depend on it.
 - **Front-end stack and hosting — not yet designed.** Deliberately deferred:
   the snapshot job doesn't depend on them, and deciding now would be premature.
 - **The final list of 40 specific channels** — not yet compiled.
-- **YouTube API Terms of Service** — rules on data retention and thumbnail
-  display need reviewing before anything goes to a public URL.
----
+- **YouTube API Terms of Service** — data retention and thumbnail display rules.
+  Worth closing before the front end is built rather than before launch: the
+  thumbnail rules could constrain how the results view works, and that is
+  cheaper to know now than to discover afterwards.
 
 ## Rejected — and why
 
@@ -304,3 +377,32 @@ gain at prototype scale. Scope creep.
 Would make the script safe to re-run, but silently. A schema file that no-ops
 is how you come to believe a change was applied when it wasn't. Re-running
 should fail loudly.
+
+**Widening the collection window from 90 days to 24 months.**
+Would keep every baseline video freshly re-measured on each run, removing the
+need for a backfill. Costs ~4,000 rows a week instead of ~400, most of them
+re-measuring mature videos whose numbers barely move. More data, no more
+insight. The backfill achieves the same result once, for ~25 quota units.
+
+**Building the v2 age-matched baseline now.**
+Proposed independently during design and correct as a destination, but it
+requires 7-day figures that only exist if collected at the time — the API
+cannot report them retroactively. At first run there would be zero comparison
+videos, and ~10 weeks before a weekly uploader reached 10. The headline feature
+would show a limited-data warning on every channel for months. v1 pairs a
+collectable numerator with a backfillable denominator, which is precisely why
+it works on day one.
+
+**A dedicated warning state for baselines spanning more than 24 months.**
+The backfill collects videos older than 24 months anyway, so the data exists as
+a fallback. But the channel selection rule requires monthly uploads — a channel
+that cannot produce 10 videos in 24 months violates the rule and does not
+belong in the list. Building a conditional in the baseline query plus a second
+UI state to handle a case the inclusion criteria already exclude is scope
+creep.
+
+**Storing video description and tags.**
+Available from the API and irreversible in a narrow sense, since creators edit
+them. Only the parked "why did it work" layer would use them. Declined
+knowingly rather than overlooked: collecting fields on the chance a parked
+feature is revived is how a prototype bloats.

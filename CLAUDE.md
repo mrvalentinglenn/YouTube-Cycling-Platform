@@ -100,6 +100,7 @@ once; numbers that change are stored per week.**
 | `name` | text | Human-readable, e.g. "Canyon" |
 | `category` | text | brands \| triathletes \| teams \| influencers |
 | `added_at` | timestamptz | When we started tracking |
+| `avatar_url` | text, nullable | Channel thumbnail, refreshed on collection runs |
 
 Adding a channel is a new row here — never a code change. The CHECK constraint exists because these rows are inserted by hand: a typo like 'brand' raises no error on its own, it just removes that channel from every category query silently.
 
@@ -251,6 +252,10 @@ Baseline specification:
 - Computed **separately for Shorts and long-form** — different view scales.
 - The video being scored is **excluded** from its own baseline.
 - **Recomputed weekly.**
+- **Baseline data comes from a one-time backfill**, not from weekly collection.
+  Lifetime views of a mature video are readable from the API at any moment, so
+  the baseline set is fetched once before the first weekly run. The ongoing
+  90-day window would take months to accumulate the same coverage.
 - **7-day measurement lag:** each weekly run scores videos published 8–14 days
   earlier, so every video is measured with the same yardstick.
 
@@ -260,6 +265,35 @@ ranking — every video in a given week is measured identically — but the numb
 must **never** be shown as a percentage ("180% of normal"), because that invites
 the wrong reading. Present it as an Outlier Score and lead with the ranking.
 
+### v1 baseline vs v2 baseline
+
+The formula never changes. Only what the denominator is made of changes.
+
+**v1 (now):** baseline = median **lifetime** views of the channel's last 15
+mature videos. Readable from the API on day one, which is why the prototype
+works immediately. Cost: a 7-day-old video is compared against months of
+accumulation, so scores land below 1.0.
+
+**v2 (~3 months in):** baseline = median **7-day** views of those same past
+videos. Like-for-like, so a score of 1.4 genuinely means 40% above the
+channel's normal first week. Impossible at launch: the API cannot report what
+a video had at 7 days, so those figures exist only if collected at the time.
+
+The weekly job accumulates exactly this. Each run measures videos in their
+first 90 days, so every video passing through gets recorded at roughly 7 days
+of age. Once a channel has 10 such videos, v2 becomes available **for that
+channel** — the switchover is per channel and data-driven, not a single
+release.
+
+**Provisional Score warning.** While a channel's baseline rests on fewer than
+10 reference videos, the front end labels the score:
+
+> **Provisional Score** — baseline drawn from a limited number of reference
+> videos.
+
+This is the transition mechanism, not a temporary patch. It stays in the
+product permanently, because a newly added channel starts thin too.
+
 ## Prototype features — must have
 
 - Filter: absolute vs relative success.
@@ -268,6 +302,7 @@ the wrong reading. Present it as an Outlier Score and lead with the ranking.
   title.
 - "See more" to reveal #4, #5, #6 and beyond.
 - No user accounts, no login. Public and read-only.
+- Channel avatar shown alongside each video.
 
 ## Explicitly out of scope
 
@@ -275,6 +310,8 @@ Transcript summaries; the "why did it work" auto-tagging layer; cross-category
 benchmarking; weekly digest email (planned for n8n, post-prototype); a "how the Outlier Score works" page;
 age-matched v2 baselines; growth curves in the UI; engagement as a user-facing
 filter; daily collection; Instagram/TikTok; user accounts; more than 40 channels.
+Planned for the front end, not yet built: a user-facing toggle between 7-day
+and lifetime baselines. Only meaningful once v2 data exists.
 
 These are good ideas parked deliberately, not oversights. Don't build them
 without asking.
@@ -322,7 +359,11 @@ The weekly job must:
 1. Read the channel list from the `channels` table — never from a hardcoded list.
 2. For each channel, fetch the uploads playlist, then video details in batches
    of 50. Never use `search.list` (100 quota units per call).
-3. Filter to videos published in the last 90 days.
+3. Filter to videos published in the last 90 days. This is the *collection*
+   window — which videos get re-measured weekly — and is deliberately not the
+   same as the baseline window. Videos past 90 days barely move; re-fetching
+   them weekly would mean ~4,000 rows a week to watch numbers that don't
+   change.
 4. Insert any video not already in `videos`. Never update existing rows there.
 5. Upsert this week's numbers into `video_snapshots` on
    `(video_id, snapshot_date)`, so a re-run on the same day overwrites rather
@@ -332,3 +373,20 @@ The weekly job must:
 7. Ping the Healthchecks.io URL as the final action, only on full success.
 
 Fail loudly. A run that writes 40 rows instead of 400 must not report success.
+
+### Backfill mode
+
+Run once, before the first weekly run. For each channel, walk the uploads
+playlist back ~30 videos regardless of publish date, insert into `videos`, and
+write one `video_snapshots` row each dated today. ~1,200 videos total, ~25
+quota units against a daily 10,000.
+
+Without it the baseline has nothing to stand on: only videos inside the 90-day
+window would ever enter `videos`, giving 8–9 usable reference videos for a
+weekly uploader and 2–3 for a monthly one — both under the minimum of 10. The
+Outlier Score, the product's headline feature, could not be computed for a
+single channel on the first run.
+
+Fetching more than 24 months of videos is deliberate. The channel selection
+rule should make it unnecessary, but the data costs nothing to collect and
+cannot be collected retroactively.
