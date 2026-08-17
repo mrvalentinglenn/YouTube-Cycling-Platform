@@ -8,33 +8,7 @@ something to read from and somewhere to write to. No script yet.
 
 ---
 
-## Session 3 — Compile the 40 channels (~2–3 hrs)
 
-Tedious but unavoidable, and the one task that can't be delegated. Do it in a
-spreadsheet, then import.
-
-- [ ] Decide the actual 40 channels: 10 brands, 10 triathletes, 10 teams,
-      10 influencers.
-- [ ] Check each one uploads at least once a month. Drop any that don't — this
-      rule is what keeps the baselines usable.
-- [ ] Find each channel's `channel_id` (starts with UC). It's not in the URL for
-      channels with custom handles — use the API call from Session 1 with
-      `forHandle=`, or view the channel page source and search for `channelId`.
-- [ ] Build a spreadsheet with columns: `channel_id`, `name`, `category`.
-- [ ] Use exactly these category values: `brands`, `triathletes`, `teams`,
-      `influencers`. Anything else is now rejected by a CHECK constraint, so a
-      typo fails the import rather than passing silently.
-- [ ] Export as CSV and import into `channels` via the Supabase table editor.
-      Leave `added_at` out of the CSV — it fills itself in.
-- [ ] Verify: 40 rows, 10 per category, no blank `channel_id`.
-
-Watch for: a channel ID you can't find usually means the channel was renamed or
-the handle is wrong. Don't guess — a wrong ID fails silently later by simply
-returning no videos.
-
-**Done when:** `channels` holds 40 verified rows.
-
-**Commit:** the CSV, if you keep it in the repo. Nothing else changes.
 
 ---
 
@@ -79,3 +53,9 @@ Rough order once you get there:
 - If a task turns out to be bigger than expected, split it rather than letting
   it sit half-finished.
 - Decisions made along the way go in DECISIONS.md, not here.
+
+## Modify and get clarity on V1 and V2
+- We have now defined that in v1 we will show life-time results (life-time views, clicks etc)
+- after 2-3 months, we will build v2 with 7-day results
+- however, I would like to include this already in V1 with the warning
+- Important TO DO: Understand thoroughly how data selection is defined in Claude.md and modify accoridingly
