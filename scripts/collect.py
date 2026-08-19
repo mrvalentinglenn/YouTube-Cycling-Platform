@@ -1,11 +1,12 @@
-"""Stage 3 of the collection script: loop over all channels, read from the database.
+"""Stage 4 of the collection script: the tiered collection window and --mode.
 
-Extends stage 2 (one hardcoded channel) to read the full channel list from
-the `channels` table and run the same per-channel collection logic for each
-row, isolating failures so one bad channel can't abort the run. See
-NEXT_STEPS.md for the stages that follow this one.
+Extends stage 3 (loop over all channels) with pagination through each
+channel's uploads playlist and an early-stop rule so only videos inside the
+current collection window are fetched. See NEXT_STEPS.md for the stages that
+follow this one.
 """
 
+import argparse
 import json
 import os
 import re
@@ -51,6 +52,9 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
 api_calls = 0
 quota_units = 0
 
+# Backfill stops by count rather than by date — see resolve_mode().
+BACKFILL_VIDEO_LIMIT = 100
+
 # ISO 8601 durations from the API look like "PT4M13S" or "PT1H2M3S": the
 # letters mark hours/minutes/seconds and any of the three groups can be
 # absent. This matches each optional group and defaults missing ones to 0
@@ -69,6 +73,28 @@ class CollectionError(Exception):
     """Raised for a per-channel failure so the main loop can catch it, print
     a clear message, and move on to the next channel instead of the whole
     run dying on one bad API or database response."""
+
+
+def resolve_mode(explicit_mode):
+    """Turn the --mode argument (or its absence) into the mode this run
+    actually uses. Returns (resolved_mode, window_days, origin):
+    window_days is None for backfill, which stops by video count instead of
+    by date. origin is 'derived from date' or 'override', purely for the
+    startup log line."""
+    if explicit_mode == "backfill":
+        return "backfill", None, "override"
+    if explicit_mode == "daily":
+        return "daily", 8, "override"
+    if explicit_mode == "weekly":
+        return "weekly", 90, "override"
+
+    # No --mode passed: this is what the scheduled GitHub Actions run does,
+    # so a scheduling mistake can never put it in the wrong mode. Monday
+    # widens to the 90-day sweep; every other day uses the 8-day window.
+    today = datetime.now(timezone.utc).date()
+    if today.weekday() == 0:  # Monday
+        return "weekly", 90, "derived from date"
+    return "daily", 8, "derived from date"
 
 
 def parse_duration_to_seconds(duration):
@@ -113,12 +139,13 @@ def raise_supabase_error(call_name, error):
     raise CollectionError(f"{call_name} failed — {error}") from error
 
 
-def collect_channel(channel_id, channel_name):
-    """Run the full stage-2 pipeline for one channel: resolve its uploads
-    playlist, fetch one page of videos, fetch their details, and write to
-    `videos` and `video_snapshots`. Raises CollectionError (or lets an
-    unexpected exception surface) on any failure — the caller decides what
-    happens to the rest of the run."""
+def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapshot_date):
+    """Run the full collection pipeline for one channel: resolve its
+    uploads playlist, walk it page by page until the collection window (or,
+    in backfill, the video count) is exhausted, fetch video details, and
+    write to `videos` and `video_snapshots`. Raises CollectionError (or lets
+    an unexpected exception surface) on any failure — the caller decides
+    what happens to the rest of the run."""
     global api_calls, quota_units
 
     # --- Step 1: resolve the channel's uploads playlist ---------------
@@ -146,46 +173,88 @@ def collect_channel(channel_id, channel_name):
     if not uploads_playlist_id:
         raise CollectionError("channel has no uploads playlist (likely terminated or empty)")
 
-    # --- Step 2: fetch one page of the uploads playlist ----------------
-    # maxResults=50 is the API's own per-page ceiling. Getting more than
-    # one page requires following pageToken, which is deliberately not done
-    # yet — this stage only proves the loop writes correctly across all
-    # channels.
-    try:
-        playlist_response = youtube.playlistItems().list(
-            part="contentDetails,snippet",
-            playlistId=uploads_playlist_id,
-            maxResults=50,
-        ).execute()
-    except HttpError as e:
-        raise_api_error("playlistItems.list", e)
+    # --- Step 2: walk the uploads playlist, page by page, with an early stop ---
+    # The uploads playlist is ordered newest-first. That ordering is what
+    # makes an early stop correct: the moment one video falls outside the
+    # window (or, in backfill, the count limit is reached), every video
+    # after it is older still, so no later item on this page — or on any
+    # further page — can qualify either. Stopping there, rather than
+    # fetching every page and filtering afterwards, is what keeps a 90-day
+    # sweep from paging through a channel's entire multi-year history.
+    video_ids = []
+    published_at_by_video_id = {}
+    pages_fetched = 0
+    next_page_token = None
+    window_exceeded = False
 
-    api_calls += 1
-    quota_units += 1
+    while True:
+        request_kwargs = {
+            "part": "contentDetails,snippet",
+            "playlistId": uploads_playlist_id,
+            "maxResults": 50,
+        }
+        if next_page_token:
+            request_kwargs["pageToken"] = next_page_token
 
-    playlist_items = playlist_response.get("items", [])
+        try:
+            playlist_response = youtube.playlistItems().list(**request_kwargs).execute()
+        except HttpError as e:
+            raise_api_error("playlistItems.list", e)
 
-    # contentDetails.videoPublishedAt is used deliberately instead of
-    # snippet.publishedAt. On a playlist item, snippet.publishedAt is when
-    # the video was ADDED TO THE PLAYLIST, which for an uploads playlist is
-    # usually but not always the same moment as when the video was actually
-    # published. The 8-day and 90-day collection windows depend on the true
-    # publish date.
-    published_at_by_video_id = {
-        item["contentDetails"]["videoId"]: item["contentDetails"]["videoPublishedAt"]
-        for item in playlist_items
-    }
-    video_ids = list(published_at_by_video_id.keys())
+        api_calls += 1
+        quota_units += 1
+        pages_fetched += 1
+
+        for item in playlist_response.get("items", []):
+            if resolved_mode == "backfill":
+                if len(video_ids) >= BACKFILL_VIDEO_LIMIT:
+                    window_exceeded = True
+                    break
+            else:
+                # contentDetails.videoPublishedAt, not snippet.publishedAt:
+                # on a playlist item, snippet.publishedAt is when the video
+                # was ADDED TO THE PLAYLIST, not necessarily when it was
+                # published. Age is computed by date subtraction only —
+                # published_at is a timestamptz, snapshot_date is a date,
+                # and CLAUDE.md accepts the resulting sub-day imprecision
+                # deliberately rather than adding time-of-day handling.
+                published_at = item["contentDetails"]["videoPublishedAt"]
+                published_date = datetime.fromisoformat(
+                    published_at.replace("Z", "+00:00")
+                ).date()
+                age_days = (snapshot_date - published_date).days
+                if age_days > window_days:
+                    window_exceeded = True
+                    break
+
+            video_id = item["contentDetails"]["videoId"]
+            video_ids.append(video_id)
+            published_at_by_video_id[video_id] = item["contentDetails"]["videoPublishedAt"]
+
+        if window_exceeded:
+            break
+        if resolved_mode == "backfill" and len(video_ids) >= BACKFILL_VIDEO_LIMIT:
+            break
+
+        next_page_token = playlist_response.get("nextPageToken")
+        if not next_page_token:
+            break
 
     if not video_ids:
-        return {"videos_found": 0, "videos_inserted": 0, "snapshots_written": 0}
+        return {
+            "videos_found": 0,
+            "videos_inserted": 0,
+            "snapshots_written": 0,
+            "pages_fetched": pages_fetched,
+            "videos_skipped": 0,
+        }
 
     # --- Step 3: fetch full video details, batched -------------------
     # playlistItems only carries the ID and playlist-add metadata, not
     # duration, view/like/comment counts, or thumbnails — those come from
     # videos.list. It accepts at most 50 IDs per call (1 quota unit
-    # regardless of how many of the 50 are actually used), so IDs are
-    # chunked defensively even though one playlist page never exceeds 50.
+    # regardless of how many of the 50 are actually used); chunking here
+    # already covers a window or backfill run spanning more than one page.
     video_details = []
     for batch in chunked(video_ids, 50):
         try:
@@ -201,17 +270,33 @@ def collect_channel(channel_id, channel_name):
         video_details.extend(videos_response.get("items", []))
 
     # --- Step 4: shape the rows for each table ------------------------
-    snapshot_date = datetime.now(timezone.utc).date().isoformat()
-
     videos_rows = []
     snapshot_rows = []
+    videos_skipped = 0
     for video in video_details:
         video_id = video["id"]
         snippet = video["snippet"]
         content_details = video["contentDetails"]
         statistics = video["statistics"]
 
-        duration_seconds = parse_duration_to_seconds(content_details["duration"])
+        # Live streams, premieres and upcoming broadcasts have no playable
+        # length and come back as "P0D" (or other shapes outside
+        # PT#H#M#S) rather than a real duration. Skipping the video is
+        # deliberate: substituting 0 would store a multi-hour stream as a
+        # 0-second Short and corrupt that channel's Shorts baseline — the
+        # same reasoning that makes likes/comments nullable rather than 0.
+        # Skip this one video and keep going; never abort the channel over
+        # it.
+        try:
+            duration_seconds = parse_duration_to_seconds(content_details["duration"])
+        except ValueError:
+            videos_skipped += 1
+            print(
+                f"{channel_name}: skipped {video_id} — unparseable duration "
+                f"{content_details['duration']!r}"
+            )
+            continue
+
         # Duration-only Shorts heuristic, per DECISIONS.md — no HEAD request
         # check at this stage.
         is_short = duration_seconds <= 180
@@ -241,7 +326,7 @@ def collect_channel(channel_id, channel_name):
         snapshot_rows.append(
             {
                 "video_id": video_id,
-                "snapshot_date": snapshot_date,
+                "snapshot_date": snapshot_date.isoformat(),
                 "views": views,
                 "likes": likes,
                 "comments": comments,
@@ -286,14 +371,44 @@ def collect_channel(channel_id, channel_name):
     snapshots_written = len(snapshots_response.data)
 
     return {
-        "videos_found": len(video_ids),
+        # len(videos_rows), not len(video_ids): skipped videos never made
+        # it into videos_rows/snapshot_rows, so this stays equal to
+        # snapshots_written — the consistency check stage 6 adds relies on
+        # "videos found" meaning "videos actually written".
+        "videos_found": len(videos_rows),
         "videos_inserted": videos_inserted,
         "snapshots_written": snapshots_written,
+        "pages_fetched": pages_fetched,
+        "videos_skipped": videos_skipped,
     }
 
 
 def main():
     start_time = time.monotonic()
+
+    parser = argparse.ArgumentParser(description="YouTube Trends Platform collection job")
+    parser.add_argument(
+        "--mode",
+        choices=["daily", "weekly", "backfill"],
+        default=None,
+        help=(
+            "Override the derived collection window. Default: derived from "
+            "today's UTC date (90 days on Monday, 8 days otherwise)."
+        ),
+    )
+    args = parser.parse_args()
+
+    resolved_mode, window_days, origin = resolve_mode(args.mode)
+    snapshot_date = datetime.now(timezone.utc).date()
+
+    if resolved_mode == "backfill":
+        print(
+            f"Mode: backfill ({origin}) — collecting up to "
+            f"{BACKFILL_VIDEO_LIMIT} videos per channel, ignoring publish date"
+        )
+    else:
+        print(f"Mode: {resolved_mode} ({origin}) — window: {window_days} days")
+    print()
 
     # The channel list is data, never a hardcoded list — adding a channel is
     # a new row in `channels`, never a code change. This read costs no
@@ -316,13 +431,17 @@ def main():
     total_videos_found = 0
     total_videos_inserted = 0
     total_snapshots_written = 0
+    total_pages_fetched = 0
+    total_videos_skipped = 0
 
     for row in channels:
         channel_id = row["channel_id"]
         channel_name = row["name"]
 
         try:
-            stats = collect_channel(channel_id, channel_name)
+            stats = collect_channel(
+                channel_id, channel_name, resolved_mode, window_days, snapshot_date
+            )
         except Exception as e:
             # Catches CollectionError (API/Supabase failures we raised
             # deliberately) as well as anything unexpected — a malformed
@@ -337,9 +456,12 @@ def main():
         total_videos_found += stats["videos_found"]
         total_videos_inserted += stats["videos_inserted"]
         total_snapshots_written += stats["snapshots_written"]
+        total_pages_fetched += stats["pages_fetched"]
+        total_videos_skipped += stats["videos_skipped"]
         print(
             f"{channel_name}: {stats['videos_found']} videos found, "
-            f"{stats['videos_inserted']} new in videos"
+            f"{stats['videos_inserted']} new in videos, "
+            f"{stats['pages_fetched']} page(s) fetched"
         )
 
     duration_seconds = time.monotonic() - start_time
@@ -353,8 +475,10 @@ def main():
     else:
         print("Channels failed: none")
     print(f"Total videos found: {total_videos_found}")
+    print(f"Videos skipped (unparseable duration): {total_videos_skipped}")
     print(f"Total rows inserted into videos: {total_videos_inserted}")
     print(f"Total rows written to video_snapshots: {total_snapshots_written}")
+    print(f"Total playlist pages fetched: {total_pages_fetched}")
     print(f"API calls made: {api_calls}")
     print(f"Quota units used: {quota_units}")
     print(f"Duration: {duration_seconds:.1f}s")
