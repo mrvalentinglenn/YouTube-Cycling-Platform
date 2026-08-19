@@ -27,22 +27,39 @@ with a user-facing toggle between a 7-day and a 90-day window, both age-matched.
 Collection moves from weekly to daily with a tiered window, which is what makes
 an exact day-7 reading possible. Front-end layout fixed — see `preview.png`.
 
-Collection script `scripts/collect.py` built through stage 3 of `NEXT_STEPS.md`
-and committed. It reads the channel list from the `channels` table, resolves each
-uploads playlist, fetches video details in batches of 50, and writes to `videos`
-(insert-only) and `video_snapshots` (upsert on the composite key). Failures are
-isolated per channel: one bad channel is reported and skipped, never fatal to the
-run.
+Collection script `scripts/collect.py` built through stage 5 of `NEXT_STEPS.md`
+and committed. It reads the channel list from the `channels` table, walks each
+uploads playlist with pagination, derives its window from the date or from
+`--mode`, and writes to `videos` (insert-only) and `video_snapshots` (upsert on
+the composite key). Failures are isolated per channel: one bad channel is
+reported and skipped, never fatal to the run.
 
-First full run over all 40 channels: 40 processed, 0 failed, 1,959 videos, 120
-quota units, 34.7 seconds. Idempotency verified by re-running — 0 new rows in
-`videos`, all snapshot rows overwritten rather than duplicated. Nullable
-engagement confirmed against real data: 80 videos with likes hidden and 3 with
-comments disabled, all stored as NULL rather than 0.
+All four modes verified by running them:
 
-Not yet built: the tiered window and `--mode` argument (stage 4), the backfill
-run, `job_runs` writes, the GitHub Actions workflow, the Healthchecks ping, and
-the front end. Collection is therefore not yet live — nothing runs on a schedule.
+| Mode | Videos | Pages | Quota | Duration |
+|---|---|---|---|---|
+| stage 3, one page per channel | 1,959 | 40 | 120 | 34.7s |
+| `daily` (8 days) | 129 | 40 | 108 | 24.7s |
+| `weekly` (90 days) | 1,382 | 55 | 150 | 32.6s |
+| `backfill` (100/channel) | 3,824 | 78 | 196 | 46.4s |
+
+Idempotency verified by re-running — 0 new rows in `videos`, all snapshot rows
+overwritten rather than duplicated. Nullable engagement confirmed against real
+data: 80 videos with likes hidden, 3 with comments disabled, all stored as NULL.
+Backfill complete: 3,824 videos across all 40 channels, none failed.
+
+Two bugs found by running rather than by reading. `P0D` durations — YouTube's
+answer for live streams and premieres, which have no playable length — crashed
+three channels outright on the first backfill; those videos are now skipped and
+counted rather than written as 0 seconds, which would have filed a three-hour
+stream as a Short. Three videos in 3,824, and it took down 7.5% of the channel
+list. And the duration heuristic for `is_short` is wrong on this dataset — see
+the decision below, which is the open work.
+
+Not yet built: the Shorts classification fix, `job_runs` writes, the GitHub
+Actions workflow, the Healthchecks ping, and the front end. Collection is
+therefore not yet live — nothing runs on a schedule, and every day before that
+is data that cannot be recovered.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
@@ -55,6 +72,48 @@ that specific day.
 ---
 
 ## Decisions
+
+**2026-08-19 — Duration heuristic rejected as the sole Shorts test; HEAD check
+promoted to required.**
+The 2026-08-16 decision started with duration <= 180 seconds and left the HEAD
+check as a fallback "if needed". It is needed. Manual inspection of Red Bull Bike
+and Decathlon found regular videos — not Shorts — sitting under three minutes,
+and on Decathlon roughly one in four of those is under 60 seconds. There is
+therefore no duration floor that separates the two: a video of 45 seconds may be
+either. The "~95% accurate" figure in the brief does not hold for brand channels
+that publish short product videos as ordinary uploads, which is a large part of
+this dataset.
+
+This is not a cosmetic mislabel. `is_short` splits every baseline, so a regular
+video wrongly filed as a Short is measured against the wrong median and pollutes
+both. It also invalidates the long-form counts that the backfill-depth question
+was being argued from — Decathlon's 6, Red Bull's 8 and Malachi Cashmore's 9 were
+all computed from a classification now known to be wrong, so that question is
+parked until the data is corrected rather than settled on bad figures.
+
+The HEAD check itself was verified before being relied on, using twelve videos of
+known status — six real Shorts and six regular videos under 180 seconds, drawn
+from both problem channels. Result via curl: 200 for a Short, 303 with a
+`Location` header pointing at `/watch?v=` for a regular video. Exactly as
+documented, and the endpoint is sound.
+
+The same twelve requests from Python returned 302 for every video, Shorts and
+non-Shorts alike — zero discriminating power. The endpoint is therefore fine and
+the fault is in what the Python request sends versus what curl sends. Diagnosis
+in progress; `scripts/test_shorts_check.py` is the harness and stays in the repo
+as the record of it.
+
+Worth recording as method rather than as a finding: testing the check against
+twelve known videos cost a minute and revealed that a naive implementation would
+have produced 3,000 confidently wrong answers. Running it blind across the whole
+table would have looked like it worked.
+
+Consequences. Prevention belongs in `collect.py`: every video under 180 seconds
+gets a HEAD check before `is_short` is written, ~120 requests on a daily run.
+Correction is a separate one-off script over the ~3,000 rows already marked as
+Shorts — kept out of `collect.py` deliberately, because unlike backfill it shares
+almost none of the collection logic, and the 2026-08-19 one-script decision
+turned on shared logic
 
 **2026-08-19 — Backfill depth raised from ~30 to 100 videos per channel.**
 Measured rather than assumed. The first full run over all 40 channels wrote

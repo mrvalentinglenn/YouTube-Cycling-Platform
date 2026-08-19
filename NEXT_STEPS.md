@@ -11,47 +11,48 @@ that is data that cannot be recovered.
 
 ## The collection script
 
-Build it in stages. Don't skip ahead — each stage is a thing that can break on
-its own, and finding out which one broke is much harder once three are stacked.
+Stages 1–5 are done and deleted. `scripts/collect.py` reads the channel list
+from the table, walks each uploads playlist with pagination, derives its window
+from the date or from `--mode`, and writes to `videos` and `video_snapshots`.
+The backfill has run: 3,824 videos across all 40 channels.
 
-- [ ] **1. Read-only, one channel.** Fetch one channel's uploads playlist and
-      print the videos it finds. No database writes at all. Confirms the API key
-      works, the playlist walk is correct, and the quota cost is what was
-      expected.
+- [ ] **6. Fix Shorts classification.** The duration heuristic is wrong on this
+      dataset — brand channels publish regular videos under 3 minutes, some
+      under 60 seconds, so no duration floor separates them. The HEAD check to
+      `youtube.com/shorts/{video_id}` does work: verified with curl, 200 for a
+      Short and 303 for a regular video. But the same request from Python
+      returned 302 for all twelve test videos, so the difference is in what the
+      Python request sends. `scripts/test_shorts_check.py` is the diagnostic.
 
-- [ ] **2. Write, one channel.** Extend it to insert into `videos` and
-      `video_snapshots` for that same channel. Writes to `video_snapshots` must
-      use `ON CONFLICT (video_id, snapshot_date) DO UPDATE` — the composite key
-      prevents duplicate rows but makes a plain re-insert *fail*, which would
-      leave a half-finished run impossible to retry. Inserts to `videos` must
-      skip rows already present and never update them.
+      Two pieces, and they are separate work:
+      - **Prevention** — in `collect.py`, HEAD-check every video under 180
+        seconds before writing `is_short`. A daily run finds ~120 videos, so
+        this is a few dozen extra requests. This is the permanent fix.
+      - **Correction** — a one-off script to re-check the ~3,000 existing rows
+        already marked as Shorts and update `is_short` where wrong. Not part of
+        `collect.py`: it shares almost no logic with collection, and it runs
+        once.
 
-- [ ] **3. All 40 channels.** Loop over the channel list read from the
-      `channels` table — never a hardcoded list. Run it manually.
+      Re-check the long-form counts per channel afterwards. The current figures
+      for Decathlon (6), Red Bull Bike (8) and Malachi Cashmore (9) are measured
+      against a classification known to be wrong, so the backfill depth question
+      cannot be settled until this is fixed.
 
-- [ ] **4. Add the tiered window.** With no `--mode` argument the script derives
-      its window from today's date: 90 days on Monday, 8 days otherwise. Add
-      `--mode daily`, `--mode weekly` and `--mode backfill` as manual overrides,
-      so the Monday path can be tested without waiting for a Monday.
-
-- [ ] **5. Run the backfill.** `--mode backfill`, once, manually. Walks each
-      channel's uploads playlist back ~30 videos regardless of publish date.
-      ~1,200 rows, ~25 quota units. Must happen before the first scheduled run:
-      without it no channel has enough reference videos for a baseline, and the
-      90-day window has nothing to read at all.
-
-- [ ] **6. Add `job_runs` writes.** Insert a row with `status = 'running'` at
+- [ ] **7. Add `job_runs` writes.** Insert a row with `status = 'running'` at
       the start, update it at the end. The final update must run in a `finally`
       block, so a predictable failure still records `status = 'failed'` and an
       error message. A row stuck at `running` then means something worse — the
-      process was killed and never reached its own error handling.
+      process was killed and never reached its own error handling. Include the
+      resolved `mode`, and implement the three failure checks defined in
+      DECISIONS.md.
 
-- [ ] **7. Move to GitHub Actions, daily schedule.** Fixed UTC hour, and treat
+- [ ] **8. Move to GitHub Actions, daily schedule.** Fixed UTC hour, and treat
       that hour as a constant once collection starts. Secrets go in GitHub
       Secrets, never in the workflow file. Collection is now live.
 
-- [ ] **8. Add the Healthchecks.io ping.** Final action of the run, only on full
-      success. Configure the check for a daily period, not weekly.
+- [ ] **9. Add the Healthchecks.io ping.** Final action of the run, only on full
+      success. Configure the check for a daily period with a 28-hour grace
+      period, not weekly.
 
 ---
 
