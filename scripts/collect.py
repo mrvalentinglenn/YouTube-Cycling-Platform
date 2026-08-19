@@ -1,24 +1,22 @@
-"""Stage 2 of the collection script: write to the database, still one channel.
+"""Stage 3 of the collection script: loop over all channels, read from the database.
 
-Extends stage 1 (read-only) to insert into `videos` and upsert into
-`video_snapshots` for that same channel. See NEXT_STEPS.md for the stages
-that follow this one.
+Extends stage 2 (one hardcoded channel) to read the full channel list from
+the `channels` table and run the same per-channel collection logic for each
+row, isolating failures so one bad channel can't abort the run. See
+NEXT_STEPS.md for the stages that follow this one.
 """
 
 import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from supabase import Client, create_client
-
-# Temporary: replaced at stage 3 by a loop over rows read from the
-# `channels` table. Hardcoded here so this stage can run without that loop.
-CHANNEL_ID = "UCEMrO4N3mswohzIOsIftFDA"  # Canyon
 
 # load_dotenv() reads the .env file in this project's root and copies its
 # key=value pairs into the process's environment, so os.environ behaves as
@@ -67,6 +65,12 @@ _DURATION_PATTERN = re.compile(
 _THUMBNAIL_SIZES_LARGEST_FIRST = ["maxres", "standard", "high", "medium", "default"]
 
 
+class CollectionError(Exception):
+    """Raised for a per-channel failure so the main loop can catch it, print
+    a clear message, and move on to the next channel instead of the whole
+    run dying on one bad API or database response."""
+
+
 def parse_duration_to_seconds(duration):
     match = _DURATION_PATTERN.match(duration)
     if not match:
@@ -90,8 +94,9 @@ def chunked(sequence, size):
         yield sequence[i : i + size]
 
 
-def print_api_error(call_name, error):
-    """Print HTTP status + YouTube's own error message instead of a raw traceback."""
+def raise_api_error(call_name, error):
+    """Turn an HttpError into a CollectionError carrying a clear message
+    (HTTP status + YouTube's own error text) instead of a raw traceback."""
     status = getattr(error.resp, "status", "unknown")
     message = str(error)
     if error.content:
@@ -100,52 +105,52 @@ def print_api_error(call_name, error):
             message = body["error"]["message"]
         except (ValueError, KeyError):
             pass
-    print(f"{call_name} failed — HTTP {status}: {message}")
+    raise CollectionError(f"{call_name} failed — HTTP {status}: {message}") from error
 
 
-def print_supabase_error(call_name, error):
-    """Print a clear message for a failed Supabase write instead of a raw traceback."""
-    print(f"{call_name} failed — {error}")
+def raise_supabase_error(call_name, error):
+    """Turn a failed Supabase call into a CollectionError with a clear message."""
+    raise CollectionError(f"{call_name} failed — {error}") from error
 
 
-def main():
+def collect_channel(channel_id, channel_name):
+    """Run the full stage-2 pipeline for one channel: resolve its uploads
+    playlist, fetch one page of videos, fetch their details, and write to
+    `videos` and `video_snapshots`. Raises CollectionError (or lets an
+    unexpected exception surface) on any failure — the caller decides what
+    happens to the rest of the run."""
     global api_calls, quota_units
 
     # --- Step 1: resolve the channel's uploads playlist ---------------
     # A channel's videos aren't fetched directly; every channel has one
     # auto-generated "uploads" playlist, and playlistItems.list is what
     # actually pages through videos. contentDetails.relatedPlaylists.uploads
-    # is where the API reports that playlist's ID. snippet is requested too,
-    # purely so the channel title can be printed as a sanity check that the
-    # right channel was fetched.
+    # is where the API reports that playlist's ID.
     try:
         channel_response = youtube.channels().list(
             part="contentDetails,snippet",
-            id=CHANNEL_ID,
+            id=channel_id,
         ).execute()
     except HttpError as e:
-        print_api_error("channels.list", e)
-        sys.exit(1)
+        raise_api_error("channels.list", e)
 
     api_calls += 1
     quota_units += 1
 
     items = channel_response.get("items", [])
     if not items:
-        print(f"No channel found for ID {CHANNEL_ID}. Check the ID is correct.")
-        sys.exit(1)
+        raise CollectionError(f"no channel found on YouTube for ID {channel_id}")
 
     channel = items[0]
-    channel_title = channel["snippet"]["title"]
-    uploads_playlist_id = channel["contentDetails"]["relatedPlaylists"]["uploads"]
-
-    print(f"Channel: {channel_title} ({CHANNEL_ID})")
-    print(f"Uploads playlist: {uploads_playlist_id}\n")
+    uploads_playlist_id = channel["contentDetails"]["relatedPlaylists"].get("uploads")
+    if not uploads_playlist_id:
+        raise CollectionError("channel has no uploads playlist (likely terminated or empty)")
 
     # --- Step 2: fetch one page of the uploads playlist ----------------
     # maxResults=50 is the API's own per-page ceiling. Getting more than
     # one page requires following pageToken, which is deliberately not done
-    # yet — this stage only proves one page writes correctly.
+    # yet — this stage only proves the loop writes correctly across all
+    # channels.
     try:
         playlist_response = youtube.playlistItems().list(
             part="contentDetails,snippet",
@@ -153,8 +158,7 @@ def main():
             maxResults=50,
         ).execute()
     except HttpError as e:
-        print_api_error("playlistItems.list", e)
-        sys.exit(1)
+        raise_api_error("playlistItems.list", e)
 
     api_calls += 1
     quota_units += 1
@@ -166,143 +170,194 @@ def main():
     # the video was ADDED TO THE PLAYLIST, which for an uploads playlist is
     # usually but not always the same moment as when the video was actually
     # published. The 8-day and 90-day collection windows depend on the true
-    # publish date, so contentDetails.videoPublishedAt is the one that
-    # matters here — including for what gets written to `videos` below.
-    print(f"{'VIDEO ID':<13}  {'PUBLISHED':<20}  TITLE")
-    print("-" * 70)
-    published_at_by_video_id = {}
-    for item in playlist_items:
-        video_id = item["contentDetails"]["videoId"]
-        published_at = item["contentDetails"]["videoPublishedAt"]
-        title = item["snippet"]["title"]
-        published_at_by_video_id[video_id] = published_at
-        print(f"{video_id:<13}  {published_at:<20}  {title}")
-
+    # publish date.
+    published_at_by_video_id = {
+        item["contentDetails"]["videoId"]: item["contentDetails"]["videoPublishedAt"]
+        for item in playlist_items
+    }
     video_ids = list(published_at_by_video_id.keys())
-    videos_inserted = 0
-    snapshots_written = 0
 
     if not video_ids:
-        print("\nNo videos found on this channel's uploads playlist. Nothing to write.")
-    else:
-        # --- Step 3: fetch full video details, batched -------------------
-        # playlistItems only carries the ID and playlist-add metadata, not
-        # duration, view/like/comment counts, or thumbnails — those come
-        # from videos.list. It accepts at most 50 IDs per call (1 quota
-        # unit regardless of how many of the 50 are actually used), so IDs
-        # are chunked defensively even though one playlist page never
-        # exceeds 50.
-        video_details = []
-        for batch in chunked(video_ids, 50):
-            try:
-                videos_response = youtube.videos().list(
-                    part="snippet,contentDetails,statistics",
-                    id=",".join(batch),
-                ).execute()
-            except HttpError as e:
-                print_api_error("videos.list", e)
-                sys.exit(1)
+        return {"videos_found": 0, "videos_inserted": 0, "snapshots_written": 0}
 
-            api_calls += 1
-            quota_units += 1
-            video_details.extend(videos_response.get("items", []))
-
-        # --- Step 4: shape the rows for each table ------------------------
-        snapshot_date = datetime.now(timezone.utc).date().isoformat()
-
-        videos_rows = []
-        snapshot_rows = []
-        for video in video_details:
-            video_id = video["id"]
-            snippet = video["snippet"]
-            content_details = video["contentDetails"]
-            statistics = video["statistics"]
-
-            duration_seconds = parse_duration_to_seconds(content_details["duration"])
-            # Duration-only Shorts heuristic, per DECISIONS.md — no HEAD
-            # request check at this stage.
-            is_short = duration_seconds <= 180
-
-            # statistics.likeCount / commentCount are absent (not present as
-            # a key) when a creator has hidden likes or disabled comments —
-            # this is common on brand product launches. .get() returns None
-            # in that case, which is written to the database as NULL rather
-            # than 0, exactly as CLAUDE.md and the schema require: 0 would
-            # misrepresent a disabled feature as zero engagement.
-            views = int(statistics["viewCount"])
-            likes = int(statistics["likeCount"]) if "likeCount" in statistics else None
-            comments = (
-                int(statistics["commentCount"]) if "commentCount" in statistics else None
-            )
-
-            # `videos` holds facts that never change after a video is
-            # published, so first_seen_at is left out here — the column's
-            # own `DEFAULT now()` in schema.sql fills it in on first insert.
-            videos_rows.append(
-                {
-                    "video_id": video_id,
-                    "channel_id": CHANNEL_ID,
-                    "published_at": published_at_by_video_id[video_id],
-                    "duration_seconds": duration_seconds,
-                    "is_short": is_short,
-                }
-            )
-
-            snapshot_rows.append(
-                {
-                    "video_id": video_id,
-                    "snapshot_date": snapshot_date,
-                    "views": views,
-                    "likes": likes,
-                    "comments": comments,
-                    "title": snippet["title"],
-                    "thumbnail_url": best_thumbnail_url(snippet.get("thumbnails", {})),
-                }
-            )
-
-        # --- Step 5: write both tables, one batched call each --------------
-        # `videos` rows are immutable facts: on_conflict="video_id" with
-        # ignore_duplicates=True is Postgres's ON CONFLICT (video_id) DO
-        # NOTHING, so a video already in the table is left untouched rather
-        # than updated. Because Postgres only returns rows it actually
-        # wrote, len(response.data) after this call is exactly the count of
-        # NEW videos inserted, not the number submitted.
+    # --- Step 3: fetch full video details, batched -------------------
+    # playlistItems only carries the ID and playlist-add metadata, not
+    # duration, view/like/comment counts, or thumbnails — those come from
+    # videos.list. It accepts at most 50 IDs per call (1 quota unit
+    # regardless of how many of the 50 are actually used), so IDs are
+    # chunked defensively even though one playlist page never exceeds 50.
+    video_details = []
+    for batch in chunked(video_ids, 50):
         try:
-            videos_response = (
-                supabase.table("videos")
-                .upsert(videos_rows, on_conflict="video_id", ignore_duplicates=True)
-                .execute()
-            )
-        except Exception as e:
-            print_supabase_error("videos upsert", e)
-            sys.exit(1)
-        videos_inserted = len(videos_response.data)
+            videos_response = youtube.videos().list(
+                part="snippet,contentDetails,statistics",
+                id=",".join(batch),
+            ).execute()
+        except HttpError as e:
+            raise_api_error("videos.list", e)
 
-        # `video_snapshots` rows are this run's numbers: on_conflict uses
-        # the composite primary key (video_id, snapshot_date), and without
-        # ignore_duplicates this is ON CONFLICT ... DO UPDATE. That matters
-        # because a plain insert would violate the composite primary key
-        # and fail outright if the script is re-run on the same day —
-        # DO UPDATE makes a re-run overwrite instead, so a half-finished run
-        # can simply be retried.
+        api_calls += 1
+        quota_units += 1
+        video_details.extend(videos_response.get("items", []))
+
+    # --- Step 4: shape the rows for each table ------------------------
+    snapshot_date = datetime.now(timezone.utc).date().isoformat()
+
+    videos_rows = []
+    snapshot_rows = []
+    for video in video_details:
+        video_id = video["id"]
+        snippet = video["snippet"]
+        content_details = video["contentDetails"]
+        statistics = video["statistics"]
+
+        duration_seconds = parse_duration_to_seconds(content_details["duration"])
+        # Duration-only Shorts heuristic, per DECISIONS.md — no HEAD request
+        # check at this stage.
+        is_short = duration_seconds <= 180
+
+        # statistics.likeCount / commentCount are absent (not present as a
+        # key) when a creator has hidden likes or disabled comments — common
+        # on brand product launches. .get() returns None in that case,
+        # written to the database as NULL rather than 0: 0 would
+        # misrepresent a disabled feature as zero engagement.
+        views = int(statistics["viewCount"])
+        likes = int(statistics["likeCount"]) if "likeCount" in statistics else None
+        comments = int(statistics["commentCount"]) if "commentCount" in statistics else None
+
+        # `videos` holds facts that never change after a video is
+        # published, so first_seen_at is left out here — the column's own
+        # `DEFAULT now()` in schema.sql fills it in on first insert.
+        videos_rows.append(
+            {
+                "video_id": video_id,
+                "channel_id": channel_id,
+                "published_at": published_at_by_video_id[video_id],
+                "duration_seconds": duration_seconds,
+                "is_short": is_short,
+            }
+        )
+
+        snapshot_rows.append(
+            {
+                "video_id": video_id,
+                "snapshot_date": snapshot_date,
+                "views": views,
+                "likes": likes,
+                "comments": comments,
+                "title": snippet["title"],
+                "thumbnail_url": best_thumbnail_url(snippet.get("thumbnails", {})),
+            }
+        )
+
+    # --- Step 5: write both tables, one batched call each per channel -----
+    # `videos` rows are immutable facts: on_conflict="video_id" with
+    # ignore_duplicates=True is Postgres's ON CONFLICT (video_id) DO
+    # NOTHING, so a video already in the table is left untouched rather than
+    # updated. Because Postgres only returns rows it actually wrote,
+    # len(response.data) after this call is exactly the count of NEW videos
+    # inserted, not the number submitted.
+    try:
+        videos_response = (
+            supabase.table("videos")
+            .upsert(videos_rows, on_conflict="video_id", ignore_duplicates=True)
+            .execute()
+        )
+    except Exception as e:
+        raise_supabase_error("videos upsert", e)
+    videos_inserted = len(videos_response.data)
+
+    # `video_snapshots` rows are this run's numbers: on_conflict uses the
+    # composite primary key (video_id, snapshot_date), and without
+    # ignore_duplicates this is ON CONFLICT ... DO UPDATE. A plain insert
+    # would violate the composite primary key and fail outright on a
+    # same-day re-run — DO UPDATE makes a re-run overwrite instead.
+    # Writes stay per channel rather than batched across channels, so one
+    # channel's write failure never touches rows already written for
+    # another channel.
+    try:
+        snapshots_response = (
+            supabase.table("video_snapshots")
+            .upsert(snapshot_rows, on_conflict="video_id,snapshot_date")
+            .execute()
+        )
+    except Exception as e:
+        raise_supabase_error("video_snapshots upsert", e)
+    snapshots_written = len(snapshots_response.data)
+
+    return {
+        "videos_found": len(video_ids),
+        "videos_inserted": videos_inserted,
+        "snapshots_written": snapshots_written,
+    }
+
+
+def main():
+    start_time = time.monotonic()
+
+    # The channel list is data, never a hardcoded list — adding a channel is
+    # a new row in `channels`, never a code change. This read costs no
+    # YouTube quota; it's a Supabase query.
+    try:
+        channels_response = (
+            supabase.table("channels").select("channel_id,name").execute()
+        )
+    except Exception as e:
+        print(f"Failed to read the channels table: {e}")
+        sys.exit(1)
+
+    channels = channels_response.data
+    if not channels:
+        print("No channels found in the channels table. Nothing to do.")
+        sys.exit(1)
+
+    channels_succeeded = 0
+    failed_channels = []
+    total_videos_found = 0
+    total_videos_inserted = 0
+    total_snapshots_written = 0
+
+    for row in channels:
+        channel_id = row["channel_id"]
+        channel_name = row["name"]
+
         try:
-            snapshots_response = (
-                supabase.table("video_snapshots")
-                .upsert(snapshot_rows, on_conflict="video_id,snapshot_date")
-                .execute()
-            )
+            stats = collect_channel(channel_id, channel_name)
         except Exception as e:
-            print_supabase_error("video_snapshots upsert", e)
-            sys.exit(1)
-        snapshots_written = len(snapshots_response.data)
+            # Catches CollectionError (API/Supabase failures we raised
+            # deliberately) as well as anything unexpected — a malformed
+            # API response, a missing key, etc. Either way: name the
+            # channel, print a clear message, and move on. One bad channel
+            # must never abort the run.
+            failed_channels.append(channel_name)
+            print(f"{channel_name}: FAILED — {e}")
+            continue
+
+        channels_succeeded += 1
+        total_videos_found += stats["videos_found"]
+        total_videos_inserted += stats["videos_inserted"]
+        total_snapshots_written += stats["snapshots_written"]
+        print(
+            f"{channel_name}: {stats['videos_found']} videos found, "
+            f"{stats['videos_inserted']} new in videos"
+        )
+
+    duration_seconds = time.monotonic() - start_time
 
     # --- Summary ------------------------------------------------------------
     print()
-    print(f"Videos found: {len(video_ids)}")
-    print(f"Rows inserted into videos: {videos_inserted}")
-    print(f"Rows written to video_snapshots: {snapshots_written}")
+    print(f"Channels read from table: {len(channels)}")
+    print(f"Channels processed successfully: {channels_succeeded}")
+    if failed_channels:
+        print(f"Channels failed ({len(failed_channels)}): {', '.join(failed_channels)}")
+    else:
+        print("Channels failed: none")
+    print(f"Total videos found: {total_videos_found}")
+    print(f"Total rows inserted into videos: {total_videos_inserted}")
+    print(f"Total rows written to video_snapshots: {total_snapshots_written}")
     print(f"API calls made: {api_calls}")
     print(f"Quota units used: {quota_units}")
+    print(f"Duration: {duration_seconds:.1f}s")
 
 
 if __name__ == "__main__":
