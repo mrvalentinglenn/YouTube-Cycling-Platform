@@ -48,18 +48,24 @@ overwritten rather than duplicated. Nullable engagement confirmed against real
 data: 80 videos with likes hidden, 3 with comments disabled, all stored as NULL.
 Backfill complete: 3,824 videos across all 40 channels, none failed.
 
-Two bugs found by running rather than by reading. `P0D` durations — YouTube's
-answer for live streams and premieres, which have no playable length — crashed
-three channels outright on the first backfill; those videos are now skipped and
-counted rather than written as 0 seconds, which would have filed a three-hour
-stream as a Short. Three videos in 3,824, and it took down 7.5% of the channel
-list. And the duration heuristic for `is_short` is wrong on this dataset — see
-the decision below, which is the open work.
+Three bugs found by running rather than by reading, all in the same area:
+determining a video's duration and format.
 
-Not yet built: the Shorts classification fix, `job_runs` writes, the GitHub
-Actions workflow, the Healthchecks ping, and the front end. Collection is
-therefore not yet live — nothing runs on a schedule, and every day before that
-is data that cannot be recovered.
+`P0D` durations — YouTube's answer for live streams and premieres, which have no
+playable length — crashed three channels outright on the first backfill. A
+missing `contentDetails.duration` field crashed a fourth later. Both are now
+skipped and counted rather than written as 0 seconds, which would have filed a
+multi-hour stream as a Short. Three videos in 3,824 took down 7.5% of the
+channel list; the size of a bug says nothing about its blast radius.
+
+The third is the duration heuristic itself, which is wrong on roughly one in
+five of this dataset's Shorts. The verified HEAD check is now wired into
+`collect.py` for every video under 180 seconds. The correction of the 375
+existing rows is the immediate open work — see the decision below.
+
+Not yet built: `job_runs` writes, the GitHub Actions workflow, the Healthchecks
+ping, and the front end. Collection is therefore not yet live — nothing runs on
+a schedule, and every day before that is data that cannot be recovered.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
@@ -114,6 +120,45 @@ Correction is a separate one-off script over the ~3,000 rows already marked as
 Shorts — kept out of `collect.py` deliberately, because unlike backfill it shares
 almost none of the collection logic, and the 2026-08-19 one-script decision
 turned on shared logic
+
+*Resolved 2026-08-19 — the cause was the opposite of what was assumed.* YouTube
+routes requests to `/shorts/{id}` through a regional GDPR consent redirect, and
+eligibility is decided by the User-Agent alone. Non-browser clients — curl's
+default, and `requests`' default — are sent straight to the real answer.
+Anything browser-like, including the realistic Chrome string the test script was
+sending on the reasoning that it would be treated more normally, is funnelled
+into the consent redirect and returns 302 for every video regardless of Shorts
+status. The fix is to send no custom User-Agent at all. Verified 12/12 against
+the known set.
+
+Worth keeping as method rather than as trivia: the instinct to look like a
+browser was not just useless here, it was the entire fault, and it produced a
+result that looked like a working script returning a consistent answer. The
+twelve-video harness cost a minute and is the only reason it was caught before
+3,000 rows were confidently mislabelled.
+
+Measured impact, once wired in. On new videos, `collect.py` reclassifies 42 of
+90 checked per daily run — the heuristic was wrong on nearly half of everything
+under 180 seconds. On the existing table, a dry run over all 1,982 rows marked
+as Shorts found 375 to correct, about one in five. The reclassifications cluster
+by channel rather than spreading evenly, which is consistent with the cause:
+brand channels publishing short regular videos, not a uniform error rate.
+
+Two operational findings from the same work. `collect.py` crashed on a video
+with no `contentDetails.duration` field at all — distinct from `P0D`, which is a
+duration in an unreadable shape; both now take the same skip path, since neither
+can be classified. And the Supabase client caps an unpaginated select at 1,000
+rows, so the correction script's first dry run silently checked 1,000 of 1,982
+and would have reported success having fixed half the data. Fixed there with
+`.range()` paging. The same unpaginated pattern exists in `collect.py`'s read of
+the `channels` table and is deliberately left alone — 40 rows against a cap of
+1,000 — but it is recorded here because it would fail silently rather than
+loudly if the channel list ever grew.
+
+Consequence for the backfill-depth question: it stays parked. Decathlon, Red
+Bull Bike and Malachi Cashmore were the three channels below the threshold, and
+all three are exactly the profile this fix corrects. Their corrected counts have
+to be read before any depth change is considered.
 
 **2026-08-19 — Backfill depth raised from ~30 to 100 videos per channel.**
 Measured rather than assumed. The first full run over all 40 channels wrote

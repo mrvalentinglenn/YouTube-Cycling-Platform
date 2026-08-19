@@ -67,9 +67,18 @@ them, the answer is already no.
   stops at the window. The one-off backfill costs ~160.
 - **Available per public video:** views, likes, comments, duration, publish date,
   thumbnail, title, description, tags.
-- **Shorts detection:** no official API flag. Duration ≤ 3 minutes is ~95%
-  accurate. An unofficial HEAD request to `youtube.com/shorts/{video_id}` closes
-  the gap (200 = Short, 303 = not a Short).
+- **Shorts detection:** no official API flag, and the duration heuristic does
+  **not** work on this dataset. Brand channels publish regular videos under 3
+  minutes — on Decathlon, roughly one in four of those is under 60 seconds — so
+  no duration floor separates Shorts from short regular videos. The HEAD request
+  to `youtube.com/shorts/{video_id}` is therefore required, not optional: 200 =
+  Short, 303 = not a Short (with a `Location` header pointing at `/watch?v=`).
+  Verified against 12 videos of known status. **Send no custom User-Agent.**
+  YouTube routes this endpoint through a regional GDPR consent redirect and
+  decides eligibility by User-Agent alone: non-browser clients (curl's default,
+  `requests`' default) get the real answer, while anything browser-like gets a
+  302 to the consent page for every video, Short or not. A realistic Chrome
+  string breaks the check completely. See `scripts/test_shorts_check.py`.
 - **Terms of service:** YouTube's API Services Terms restrict how long API data
   may be stored and how thumbnails must be displayed. Review before publishing
   to a public URL.
@@ -116,7 +125,7 @@ Adding a channel is a new row here — never a code change. The CHECK constraint
 | `channel_id` | text, FK → channels | Whose video it is |
 | `published_at` | timestamptz | Drives the 90-day window, view velocity, 7-day lag |
 | `duration_seconds` | integer | Shorts heuristic + estimated watch time |
-| `is_short` | boolean | Result of the Shorts check, stored so it isn't redone |
+| `is_short` | boolean | Result of the HEAD check, stored so it isn't redone. Duration alone is not reliable — see Shorts detection above |
 | `first_seen_at` | timestamptz | When the snapshot job first picked it up |
 
 Nothing here changes after insert. On each run, insert only videos not already
@@ -493,6 +502,15 @@ The collection job must:
    days barely move; re-fetching them daily would be thousands of rows to watch
    numbers that don't change.
 4. Insert any video not already in `videos`. Never update existing rows there.
+  Videos under 180 seconds get a HEAD check to `youtube.com/shorts/{video_id}`
+   before `is_short` is written; duration alone gets roughly half of them wrong.
+   Videos over 180 seconds are long-form with certainty and must not be checked.
+   The check falls back to the duration heuristic on any non-200/303 response,
+   reporting and counting the fallback — an unofficial endpoint having a bad day
+   must never abort a run. Videos whose duration cannot be determined at all —
+   `P0D` for live streams and premieres, or no `duration` field on a video still
+   processing — are skipped entirely and counted, never written as 0 seconds,
+   which would file a long stream as a Short.
 5. Upsert today's numbers into `video_snapshots` on
    `(video_id, snapshot_date)`, so a re-run on the same day overwrites rather
    than duplicating.

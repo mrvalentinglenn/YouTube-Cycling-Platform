@@ -16,27 +16,40 @@ from the table, walks each uploads playlist with pagination, derives its window
 from the date or from `--mode`, and writes to `videos` and `video_snapshots`.
 The backfill has run: 3,824 videos across all 40 channels.
 
-- [ ] **6. Fix Shorts classification.** The duration heuristic is wrong on this
-      dataset — brand channels publish regular videos under 3 minutes, some
-      under 60 seconds, so no duration floor separates them. The HEAD check to
-      `youtube.com/shorts/{video_id}` does work: verified with curl, 200 for a
-      Short and 303 for a regular video. But the same request from Python
-      returned 302 for all twelve test videos, so the difference is in what the
-      Python request sends. `scripts/test_shorts_check.py` is the diagnostic.
+- [ ] **6. Fix Shorts classification.** Mostly done. Diagnosis and prevention
+      are complete; the correction run is the remaining work.
 
-      Two pieces, and they are separate work:
-      - **Prevention** — in `collect.py`, HEAD-check every video under 180
-        seconds before writing `is_short`. A daily run finds ~120 videos, so
-        this is a few dozen extra requests. This is the permanent fix.
-      - **Correction** — a one-off script to re-check the ~3,000 existing rows
-        already marked as Shorts and update `is_short` where wrong. Not part of
-        `collect.py`: it shares almost no logic with collection, and it runs
-        once.
+      **Done:** the HEAD check is verified (12/12) and wired into `collect.py`
+      for every video under 180 seconds. The cause of the earlier uniform 302s
+      was the opposite of what was assumed — YouTube routes browser-like
+      User-Agents to a GDPR consent redirect, so the *default* requests
+      User-Agent is required and a realistic Chrome string breaks it. Two
+      `--mode daily` runs since: 90 checks, 0 fallbacks, 42 videos that the
+      heuristic would have got wrong. A second crash was found and fixed on the
+      way — a missing `contentDetails.duration` field, distinct from `P0D`;
+      both now take the same skip path.
 
-      Re-check the long-form counts per channel afterwards. The current figures
-      for Decathlon (6), Red Bull Bike (8) and Malachi Cashmore (9) are measured
-      against a classification known to be wrong, so the backfill depth question
-      cannot be settled until this is fixed.
+      **Remaining:**
+      - [ ] Run `scripts/fix_shorts_classification.py` without `--dry-run`. The
+            dry run checked all 1,982 rows and found **375** to reclassify from
+            Short to long-form, with 2 failures on YouTube-side HTTP 500s. Takes
+            ~15 minutes. Safe to interrupt and re-run: the query selects only
+            `is_short = true`, so corrected rows drop out of the next pass.
+      - [ ] Re-run the per-channel long-form counts afterwards. Every figure
+            from before this fix was measured against a classification now known
+            to be wrong on ~19% of Shorts.
+      - [ ] Only then revisit the backfill depth question. Decathlon (6), Red
+            Bull Bike (8) and Malachi Cashmore (9) were the channels below the
+            10-video threshold, and all three are brand-style channels posting
+            short regular videos — the exact profile the fix corrects. The
+            problem may substantially disappear. Do not raise the depth before
+            looking at the corrected numbers.
+
+      Note for later: `collect.py` reads the `channels` table without
+      pagination, so it is implicitly capped at 1,000 rows — the same silent
+      truncation that hit the correction script. Not a live problem at 40
+      channels and deliberately not fixed, but it would break silently if the
+      channel list ever grew past 1,000.
 
 - [ ] **7. Add `job_runs` writes.** Insert a row with `status = 'running'` at
       the start, update it at the end. The final update must run in a `finally`

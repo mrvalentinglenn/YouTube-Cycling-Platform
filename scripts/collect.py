@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 import re
+import requests
 import sys
 import time
 from datetime import datetime, timezone
@@ -54,6 +55,10 @@ quota_units = 0
 
 # Backfill stops by count rather than by date — see resolve_mode().
 BACKFILL_VIDEO_LIMIT = 100
+
+# Courtesy delay between Shorts HEAD checks, same as test_shorts_check.py —
+# this is an unofficial endpoint with no reason to be hammered.
+SHORTS_CHECK_DELAY_SECONDS = 0.2
 
 # ISO 8601 durations from the API look like "PT4M13S" or "PT1H2M3S": the
 # letters mark hours/minutes/seconds and any of the three groups can be
@@ -112,6 +117,37 @@ def best_thumbnail_url(thumbnails):
         if size in thumbnails:
             return thumbnails[size]["url"]
     return None
+
+
+def head_check_is_short(video_id):
+    """Run the verified Shorts HEAD check for one video: 200 means it's a
+    Short, 303 means it isn't. Returns (is_short, failure_reason) — exactly
+    one of the two is meaningful. On a definitive answer, failure_reason is
+    None. On anything else (a request error, a timeout, or a status code
+    other than 200/303 — including the 302 a browser-like User-Agent would
+    trigger), is_short is None and failure_reason describes what happened,
+    so the caller can fall back to the duration heuristic instead of
+    treating the check as having failed the channel.
+
+    Deliberately no custom User-Agent: test_shorts_check.py established
+    that YouTube routes a browser-like (or any non-default) User-Agent
+    through a GDPR consent redirect that returns 302 for every video,
+    masking the real signal. curl's and requests' own default User-Agents
+    are what get routed to the real 200/303 answer, so this is left alone.
+    Redirects are not followed — the status code before redirection is the
+    signal, not the page it points to.
+    """
+    url = f"https://www.youtube.com/shorts/{video_id}"
+    try:
+        response = requests.head(url, allow_redirects=False, timeout=10)
+    except requests.RequestException as e:
+        return None, f"request failed — {e}"
+
+    if response.status_code == 200:
+        return True, None
+    if response.status_code == 303:
+        return False, None
+    return None, f"unexpected status {response.status_code}"
 
 
 def chunked(sequence, size):
@@ -247,6 +283,9 @@ def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapsh
             "snapshots_written": 0,
             "pages_fetched": pages_fetched,
             "videos_skipped": 0,
+            "head_checks_made": 0,
+            "head_check_fallbacks": 0,
+            "head_check_reclassified": 0,
         }
 
     # --- Step 3: fetch full video details, batched -------------------
@@ -273,6 +312,9 @@ def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapsh
     videos_rows = []
     snapshot_rows = []
     videos_skipped = 0
+    head_checks_made = 0
+    head_check_fallbacks = 0
+    head_check_reclassified = 0
     for video in video_details:
         video_id = video["id"]
         snippet = video["snippet"]
@@ -280,26 +322,52 @@ def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapsh
         statistics = video["statistics"]
 
         # Live streams, premieres and upcoming broadcasts have no playable
-        # length and come back as "P0D" (or other shapes outside
-        # PT#H#M#S) rather than a real duration. Skipping the video is
-        # deliberate: substituting 0 would store a multi-hour stream as a
-        # 0-second Short and corrupt that channel's Shorts baseline — the
-        # same reasoning that makes likes/comments nullable rather than 0.
-        # Skip this one video and keep going; never abort the channel over
-        # it.
-        try:
-            duration_seconds = parse_duration_to_seconds(content_details["duration"])
-        except ValueError:
+        # length. That shows up two ways: the field comes back as "P0D" (or
+        # another shape outside PT#H#M#S), or — for videos still processing,
+        # and live broadcasts in progress — the `duration` field is absent
+        # from contentDetails entirely. Both mean "no usable duration" and
+        # get the same treatment: skip the video, count it, keep going.
+        # Substituting 0 would store a multi-hour stream as a 0-second Short
+        # and corrupt that channel's Shorts baseline — the same reasoning
+        # that makes likes/comments nullable rather than 0. Never abort the
+        # channel over one video.
+        duration = content_details.get("duration")
+        if duration is None:
             videos_skipped += 1
-            print(
-                f"{channel_name}: skipped {video_id} — unparseable duration "
-                f"{content_details['duration']!r}"
-            )
+            print(f"{channel_name}: skipped {video_id} — no duration field")
             continue
 
-        # Duration-only Shorts heuristic, per DECISIONS.md — no HEAD request
-        # check at this stage.
+        try:
+            duration_seconds = parse_duration_to_seconds(duration)
+        except ValueError:
+            videos_skipped += 1
+            print(f"{channel_name}: skipped {video_id} — unparseable duration {duration!r}")
+            continue
+
+        # Duration heuristic first. Videos over 180 seconds are long-form
+        # with certainty and are never HEAD-checked — that would be
+        # thousands of pointless requests for videos the duration alone
+        # already answers correctly.
         is_short = duration_seconds <= 180
+
+        if is_short:
+            head_checks_made += 1
+            checked_is_short, failure_reason = head_check_is_short(video_id)
+            if checked_is_short is None:
+                # The endpoint had a bad day (or was rate-limiting, or
+                # returned something unrecognised) — fall back to the
+                # duration heuristic rather than let an unofficial,
+                # undocumented endpoint abort a channel.
+                head_check_fallbacks += 1
+                print(
+                    f"{channel_name}: HEAD check fallback for {video_id} — "
+                    f"{failure_reason}; using duration heuristic"
+                )
+            else:
+                if checked_is_short != is_short:
+                    head_check_reclassified += 1
+                is_short = checked_is_short
+            time.sleep(SHORTS_CHECK_DELAY_SECONDS)
 
         # statistics.likeCount / commentCount are absent (not present as a
         # key) when a creator has hidden likes or disabled comments — common
@@ -380,6 +448,9 @@ def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapsh
         "snapshots_written": snapshots_written,
         "pages_fetched": pages_fetched,
         "videos_skipped": videos_skipped,
+        "head_checks_made": head_checks_made,
+        "head_check_fallbacks": head_check_fallbacks,
+        "head_check_reclassified": head_check_reclassified,
     }
 
 
@@ -433,6 +504,9 @@ def main():
     total_snapshots_written = 0
     total_pages_fetched = 0
     total_videos_skipped = 0
+    total_head_checks_made = 0
+    total_head_check_fallbacks = 0
+    total_head_check_reclassified = 0
 
     for row in channels:
         channel_id = row["channel_id"]
@@ -458,6 +532,9 @@ def main():
         total_snapshots_written += stats["snapshots_written"]
         total_pages_fetched += stats["pages_fetched"]
         total_videos_skipped += stats["videos_skipped"]
+        total_head_checks_made += stats["head_checks_made"]
+        total_head_check_fallbacks += stats["head_check_fallbacks"]
+        total_head_check_reclassified += stats["head_check_reclassified"]
         print(
             f"{channel_name}: {stats['videos_found']} videos found, "
             f"{stats['videos_inserted']} new in videos, "
@@ -479,6 +556,9 @@ def main():
     print(f"Total rows inserted into videos: {total_videos_inserted}")
     print(f"Total rows written to video_snapshots: {total_snapshots_written}")
     print(f"Total playlist pages fetched: {total_pages_fetched}")
+    print(f"Shorts HEAD checks made: {total_head_checks_made}")
+    print(f"HEAD check fallbacks (used duration heuristic): {total_head_check_fallbacks}")
+    print(f"Videos reclassified by HEAD check: {total_head_check_reclassified}")
     print(f"API calls made: {api_calls}")
     print(f"Quota units used: {quota_units}")
     print(f"Duration: {duration_seconds:.1f}s")
