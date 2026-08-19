@@ -10,30 +10,186 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-17*
+## Current state
+
+*Last updated: 2026-08-19*
 
 Google Cloud project created, YouTube API key issued and restricted to Data API
-v3. Supabase project created on the free tier in an EU region, with
-"Automatically expose new tables" off and automatic RLS on. Schema applied from
-`sql/schema.sql`; all four tables live, verified with a test row and a
-deliberately failing insert against the category CHECK constraint.
+v3. Supabase project on the free tier in an EU region, "Automatically expose new
+tables" off, RLS on. Schema applied from `sql/schema.sql`; all four tables live,
+verified with a test row and a deliberately failing insert against the category
+CHECK constraint. `channels.avatar_url` added.
 
-Schema audited against the prototype's UI requirements — every field the
-results view needs is covered. One addition pending: `channels.avatar_url`.
+All 40 channels compiled and imported across the four categories, 10 each. A
+duplicate `channel_id` between two influencer channels was caught on import and
+resolved.
 
-Nothing else built — no collection script, no GitHub Actions workflows, no
-front end.
+Scoring model settled this session. The v1/v2 split is gone: the prototype ships
+one model with a user-facing toggle between a 7-day and a 90-day window, both
+age-matched. Collection moves from weekly to daily with a tiered window, which
+is what makes an exact day-7 reading possible. Front-end layout fixed —
+see `preview.png`.
 
+Nothing built yet — no collection script, no GitHub Actions workflows, no front
+end. `CLAUDE.md` updated to match the decisions below.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
 **After that:** get the snapshot job running. It has to start collecting before
-anything else is built, because the API holds no history and every week not
-recorded is data that can never be recovered.
+anything else is built, because the API holds no history and every day not
+recorded is data that can never be recovered. This is now more acute than under
+weekly collection: a video's day-7 reading exists only if the job was running on
+that specific day.
 
 ---
 
 ## Decisions
+
+**2026-08-19 — Daily collection with a tiered window, replacing weekly.**
+Weekly collection cannot produce a day-7 reading. A video published the day
+after a run gets measured at 14 days; one published the day before at 8 days.
+YouTube view curves are heavily front-loaded, so those figures are not
+comparable — two identically-performing videos could differ by roughly 20% in
+relative score purely from their publication weekday. The spec's claim that
+every video is "measured with the same yardstick" was therefore false as
+written, and the distortion landed squarely on the headline feature. Daily runs
+cut worst-case measurement error from 6 days to under 1. Cost is negligible:
+~43 quota units a day against 10,000, and Actions minutes are unlimited on a
+public repo. The window is tiered rather than flat — 8 days by default, 90 on
+Mondays — because a flat 90-day daily window would write ~2,800 rows a week
+instead of ~1,400, most of it re-recording day-60 videos that have stopped
+moving. Day 8 rather than 7 is a buffer: if the day-7 run fails, the day-8
+reading still salvages the score, and there is no second chance because the API
+holds no history. Supersedes "Weekly collection for the prototype" (2026-08-15)
+and "Videos scored at ~7 days of age, with a 7-day measurement lag"
+(2026-08-15).
+
+**2026-08-19 — Keep-alive workflow removed.**
+It existed solely because weekly collection sat exactly on Supabase's 7-day
+inactivity pause boundary. Daily runs touch the database every day, so the
+boundary condition is gone and the workflow has no remaining purpose. One fewer
+moving part, one fewer thing to explain. Supersedes "Keep-alive workflow to
+prevent free-tier pausing" (2026-08-16). The dead man's switch remains, and
+still covers Actions disabling scheduled workflows after 60 days of repo
+inactivity.
+
+**2026-08-19 — One version, two age-matched windows, replacing the v1/v2 split.**
+The prototype ships a single scoring model with a user-facing toggle: a 7-day
+window (a video's day-7 figure against the median day-7 figure of that
+channel's other videos) and a 90-day window (the same at ~90 days). Both sides
+of each ratio are measured at the same age, which removes the scale mismatch
+the earlier design accepted.
+
+The stronger reason is one the per-channel switchover would have created. v1 and
+v2 scores sit on scales differing by roughly 3× — v1 compares 7-day views
+against lifetime accumulation, v2 compares like against like. Switching channels
+individually as their data matured meant that at any given moment some channels
+would be on one scale and some on the other. Since the headline feature ranks
+videos *across* channels within a category, the top-3 list would have silently
+become "which channels have been tracked longest" — a ranking artefact
+masquerading as insight, and an invisible one. Age-matching both windows from
+day one makes it structurally impossible. Supersedes "v1 → v2 transition is per
+channel and data-driven" (2026-08-17).
+
+**2026-08-19 — The 90-day window uses lifetime views as a proxy until real
+snapshots exist.**
+Real 90-day figures do not exist until three months after collection begins, so
+until then the 90-day window reads the backfill's lifetime totals. For
+*relative* scoring this is sound: the proxy appears in numerator and denominator
+and largely cancels. For *absolute* scoring it means the list ranks lifetime
+totals, so older videos rank higher — accepted, because the 90-day view is
+deliberately the static "best of all time" list rather than a trending one. The
+swap to real snapshots is a change inside a database view, invisible to the
+front end.
+
+**2026-08-19 — The 90-day window is not capped by publication date.**
+Considered capping to 6, 12 or 24 months to remove the age skew in absolute
+rankings. Declined for the prototype: the 90-day list is meant to be static and
+a 2019 video is legitimately in scope for "best of all time". A publication-date
+filter is a good future feature and a good thing to be able to describe in an
+interview, but building it now is UI work in service of a distortion that is
+easier to explain than to fix. Parked, not overlooked.
+
+**2026-08-19 — The 7-day pool is 30 days wide.**
+A given week's 7-day ranking draws on every video that reached day 7 in the last
+30 days, not just the last 7. Two reasons. A day-7 reading is frozen the moment
+it is taken, so widening the pool adds depth rather than churn — a strong video
+persists near the top for four weeks instead of one, which makes the page "what
+has been trending this month" rather than "this week". And on demo day only
+videos published *since collection started* have a day-7 row at all; a 7-day
+pool would show a single week of them, with a thin "show more" list behind it.
+An empty expansion is a worse impression than a leaderboard that turns over
+slowly. One constant in one query, trivially changed if the page ever feels
+stale.
+
+**2026-08-19 — One collection script with a `--mode` argument; window defaults
+from the date.**
+Closes the open question on backfill implementation. Backfill and collection
+share roughly 90% of their logic — read channels, walk the uploads playlist,
+batch video details by 50, insert to `videos`, upsert to `video_snapshots`, log
+to `job_runs`. Only the window differs. Two scripts would mean two places to fix
+every bug and one dead file in the repo after a single use. A boolean
+`--backfill` flag was the earlier candidate but cannot express three states now
+that daily and Monday behaviour differ. With no argument the script derives its
+window from today's date, so the scheduled workflow passes nothing and cannot be
+scheduled into the wrong mode; `--mode weekly` exists so the 90-day path can be
+tested without waiting for a Monday.
+
+**2026-08-19 — Front end reads `outlier_score` and `is_provisional`; baseline
+logic lives in a database view.**
+The front end never computes a baseline and never knows which proxy is in force.
+Changing the proxy, the pool width or the provisional threshold is then a SQL
+change with no front-end work. This is the thing that actually makes the
+prototype safe to build now rather than after three months of data — not the
+choice of threshold, which was the original worry. Also means the demo can be
+finished in weeks and the remaining time spent on applications rather than
+rebuilding.
+
+**2026-08-19 — Provisional evaluated per channel, per format, per window.**
+A baseline is provisional below 10 reference videos, assessed independently for
+each combination. A channel can be provisional on Shorts but not long-form, or
+on 7-day but not 90-day. Expect it on most channels' 7-day scores early on,
+since a day-7 reading only exists for videos published after collection began.
+It clears channel by channel with no release. Confirms rather than changes the
+2026-08-17 decision that the label is permanent furniture: the format split
+means a channel posting long-form weekly and Shorts occasionally may stay
+provisional on Shorts indefinitely.
+
+**2026-08-19 — Format filter promoted to an explicit UI control.**
+Shorts vs long-form was already in the locked feature list but was missing from
+the first layout sketch. It is not optional: the two sit on entirely different
+view scales, so without the split Shorts dominate every absolute ranking and the
+comparison stops meaning anything. Four filters total — window, metric,
+comparison, format — giving 24 valid combinations.
+
+**2026-08-19 — Relative scoring extended to likes and comments.**
+The locked spec defines the Outlier Score on views only; the filter grid
+requires the same treatment for likes and comments. Mechanically identical.
+Known weakness: comment medians are small, so a channel whose median is 8
+comments hitting 30 scores 3.75 on what is mostly noise. Accepted rather than
+special-cased — a floor or a confidence weighting is complexity a prototype does
+not need, and the effect is easy to explain. `likes` and `comments` remain
+nullable, so queries use `COALESCE(x, 0)` and a null median counts as no valid
+baseline.
+
+**2026-08-19 — Age measured by date subtraction; run hour pinned to a fixed UTC
+time.**
+`published_at` is a timestamptz and `snapshot_date` is a date, so a video
+published at 23:00 and snapshotted at 06:00 seven days later is really 6.3 days
+old. Storing snapshot timestamps and interpolating would remove that error but
+is real complexity for a rounding error — and daily collection has already cut
+the dominant error from 6 days to under 1. Consequence worth recording: the run
+hour is now effectively a constant. Moving it later would make every video
+appear marginally older and shift scores against the existing record, so a
+change should be logged here rather than made casually.
+
+**2026-08-19 — The 30-day baseline floor applies to the 90-day window only.**
+Under the 7-day window the floor is redundant: a video must already be 7+ days
+old to have a day-7 reading, and that reading is frozen and comparable
+regardless of the video's current age. Under the 90-day window it still binds,
+because the lifetime proxy means a 14-day-old video has not finished
+accumulating and would drag the median down. This is the same reasoning as the
+2026-08-17 entry, now resolved per window rather than per version.
 
 **2026-08-17 — One-time backfill before the first weekly run.**
 The 90-day collection window cannot feed a baseline that needs 15 videos aged
@@ -305,20 +461,32 @@ Nothing in the prototype needs identity, and auth is pure scope cost.
 
 ## Open questions
 
-- **Backfill as a flag on the collection script, or a separate one-off script.**
-  The flag reuses the fetch-and-insert logic; a separate script is easier to
-  reason about but duplicates ~40 lines. Blocking the collection script.
-- **Failure threshold for the collection job.** "A run that writes 40 rows
-  instead of 400 must not report success" is the right instinct, but 400 is an
-  estimate that moves with upload cadence. Undefined, the threshold gets
-  invented silently at implementation time. Candidate: fail if
-  `channels_processed < 40`, or if `snapshots_written` is below 50% of the last
-  successful run.
-- **Where the scoring calculation runs** — in the collection job, as a separate
-  scheduled job, or on read. Not urgent; the snapshot job doesn't depend on it.
-- **Front-end stack and hosting — not yet designed.** Deliberately deferred:
-  the snapshot job doesn't depend on them, and deciding now would be premature.
-- **The final list of 40 specific channels** — not yet compiled.
+- **Failure threshold for the collection job.** Expected row counts now differ
+  by weekday: ~400 on Monday, ~120 otherwise. A flat threshold would flag every
+  Monday or miss every Tuesday. `channels_processed < 40` is weekday-independent
+  and probably the primary check; a secondary comparison against the last
+  successful run *of the same weekday* would catch partial failures. Undefined,
+  this gets invented silently at implementation time.
+- **Where the scoring calculation runs** — on read in a database view, or
+  materialised on a schedule. The front-end contract decision assumes a view;
+  whether that view is computed live or refreshed nightly is still open and
+  depends on how slow the median-over-15-videos query turns out to be at this
+  volume.
+- **When the 90-day window swaps from the lifetime proxy to real snapshots.**
+  Data starts existing three months in, but coverage will be partial for a long
+  time — only videos published after collection began ever reach a real day-90
+  reading. A per-channel switchover would reintroduce exactly the cross-channel
+  scale problem the two-window design was built to avoid. Likely answer: swap
+  everything at once, once coverage is broad enough. Not urgent, but should be
+  decided before the data arrives rather than after.
+- **Comparability inside the 90-day relative score.** A 4-month-old video's
+  lifetime views are compared against a median that may include 5-year-old
+  videos. The proxy cancels less cleanly here than in the 7-day case — both
+  sides use lifetime totals, but not at the same age. This is the weakest joint
+  in the model. Honest to explain, and the parked publication-date filter is the
+  fix if it ever needs one.
+- **Front-end stack and hosting — not yet designed.** Deliberately deferred: the
+  collection job doesn't depend on them.
 - **YouTube API Terms of Service** — data retention and thumbnail display rules.
   Worth closing before the front end is built rather than before launch: the
   thumbnail rules could constrain how the results view works, and that is
@@ -358,6 +526,8 @@ Comparing 7-day views against the median *7-day views* of a channel's past
 videos would remove the scale mismatch entirely. Impossible at launch because
 the historical snapshots don't exist yet. Becomes possible once the snapshot
 table holds several months of data. Worth being able to explain in an interview.
+*Superseded 2026-08-19 — no longer rejected. Age-matching is now the design for
+both windows from day one. See the decision of that date.*
 
 **OAuth for YouTube access.**
 Only needed for private data belonging to a channel owner. The platform reads
@@ -367,11 +537,15 @@ public videos exclusively. Rejected as overhead, not as unavailable.
 $25/month solves the pausing problem outright, but a keep-alive workflow solves
 it for free and no other free-tier limit is in sight at this volume. No demo
 value in paying.
+*Still rejected 2026-08-19, and now for free — daily collection removes the
+pause boundary without needing a keep-alive workflow at all.*
 
 **Twice-weekly collection as a pause workaround.**
 Would keep the project awake as a side effect, but changes what "this week's
 snapshot" means and complicates the 8–14 day scoring window for no analytical
 gain at prototype scale. Scope creep.
+*Superseded 2026-08-19 — moot. Collection is daily, which removes the pause
+boundary as a side effect and eliminates the scoring-window objection entirely.*
 
 **`IF NOT EXISTS` on the CREATE TABLE statements in `schema.sql`.**
 Would make the script safe to re-run, but silently. A schema file that no-ops
@@ -392,6 +566,12 @@ videos, and ~10 weeks before a weekly uploader reached 10. The headline feature
 would show a limited-data warning on every channel for months. v1 pairs a
 collectable numerator with a backfillable denominator, which is precisely why
 it works on day one.
+*Superseded 2026-08-19 — the objection was correct on the facts and wrong on the
+conclusion. Day-7 figures genuinely do not exist retroactively, so early
+baselines really are thin. But the Provisional Score label already handles
+thinness, and the demo timeline means weeks of data will have accumulated before
+the prototype is shown. The cost of the alternative — channels on scales
+differing by 3× — was worse than the cost of visible limited-data warnings.*
 
 **A dedicated warning state for baselines spanning more than 24 months.**
 The backfill collects videos older than 24 months anyway, so the data exists as
@@ -406,3 +586,31 @@ Available from the API and irreversible in a narrow sense, since creators edit
 them. Only the parked "why did it work" layer would use them. Declined
 knowingly rather than overlooked: collecting fields on the chance a parked
 feature is revived is how a prototype bloats.
+
+**Two separate scripts for backfill and collection.**
+Easier to reason about in isolation, but duplicates the fetch-and-insert logic
+that both need, leaving two places to fix every bug and a dead file in the repo
+after one use. A `--mode` argument on one script costs a few lines and keeps the
+logic single-sourced.
+
+**Capping the 90-day window by publication date.**
+A 6-month / 1-year / 2-year / all-time filter would remove the age skew that
+makes older videos rank higher in absolute 90-day lists. Correct as a fix and
+worth describing in an interview, but the 90-day view is deliberately the
+static all-time list, and this is UI work in service of a distortion that is
+cheaper to explain than to build around.
+
+**Storing a computed 7-day score as a column.**
+Rejected on the same principle that kept immutable facts out of
+`video_snapshots`. A stored score would silently mean different things for rows
+written before and after any change to the baseline, the pool or the proxy —
+and the proxy is known to be changing. The score is derived at read time from
+`published_at` and `snapshot_date`, so changing how it is computed cannot
+corrupt what was already recorded.
+
+**Lowering the provisional threshold below 10 reference videos.**
+Considered as a way to show fuller data sooner on the demo timeline. Declined:
+it trades a locked constraint for noisier baselines, and it was solving the
+wrong problem. The rework worry it was meant to address is handled instead by
+the front-end contract — `outlier_score` plus `is_provisional`, with baseline
+logic behind a view — which makes the threshold changeable in SQL at any time.
