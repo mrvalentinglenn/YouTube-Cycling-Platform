@@ -75,6 +75,7 @@ CREATE TABLE job_runs (
     started_at timestamptz NOT NULL DEFAULT now(),
     finished_at timestamptz,
     status text NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+    mode text NOT NULL CHECK (mode IN ('daily', 'weekly', 'backfill')),
     channels_processed integer,
     snapshots_written integer,
     error_message text

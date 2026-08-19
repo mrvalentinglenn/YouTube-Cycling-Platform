@@ -10,8 +10,6 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-## Current state
-
 *Last updated: 2026-08-19*
 
 Google Cloud project created, YouTube API key issued and restricted to Data API
@@ -44,6 +42,67 @@ that specific day.
 ---
 
 ## Decisions
+
+**2026-08-19 — Scoring runs in a live view, not a materialised one.**
+Both options present the identical interface to the front end — `SELECT
+outlier_score, is_provisional` — so this is reversible in minutes and was not
+worth deciding on a guess. Chose live because a materialised view fails
+silently: if the scheduled `REFRESH` breaks, the page serves stale scores with
+no error and no visible difference, which is exactly the failure mode the dead
+man's switch and `job_runs` exist to eliminate everywhere else. A live view
+cannot be stale. The known cost is that every page load recomputes ~160 medians
+(40 channels × 2 formats × 2 windows) over data that only changes once a day,
+which is provably wasted work — but at prototype volume and prototype traffic it
+is wasted work measured in milliseconds. Supabase's free tier does not force the
+choice: storage is negligible either way, and the shared-CPU argument that
+favours materialised only bites under concurrent load a portfolio demo will not
+see. The intended path is to measure the query once real snapshots exist and
+switch only if it is actually slow — which is also the better thing to be able
+to describe, since profiling a query and moving it is a stronger answer than
+having pre-optimised on instinct. Closes the open question of the same name.
+
+**2026-08-19 — Failure threshold defined as three checks, two of them
+history-free.**
+Closes the open question. The row-count comparison the open question centred on
+turned out to be the weakest of the three available checks, and the two stronger
+ones need no history at all.
+
+*Check 1 — completeness.* `channels_processed` must equal the number of channel
+rows the script read at the start. Deliberately not `< 40`: the channel list is
+data, not code, so a hardcoded 40 would silently stop catching a dropped channel
+the moment a 41st is added.
+
+*Check 2 — internal consistency.* `snapshots_written` must equal the number of
+videos found inside the window. This compares the run against itself, so it
+catches a partial write — a failed batch, a dropped connection, a swallowed
+upsert error — without needing to know whether tonight's figure is normal.
+Weekday-independent and correct on the first run.
+
+*Check 3 — volume.* `snapshots_written` below 50% of the last successful run of
+the same weekday and the same mode is a failure. This is the only check needing
+history, and it exists to catch the one thing the other two miss: a fetch that
+succeeds but under-returns, where an empty playlist comes back with no error and
+everything looks internally consistent. 50% is deliberately loose — the 8-day
+window makes consecutive runs overlap heavily, so counts are far more stable
+than 40 irregular uploaders would suggest, and a threshold that never false-fires
+is worth more than a tight one that trains you to ignore it. Comparing against
+the last *successful* run means the reference was itself within tolerance, so the
+baseline cannot drift downward one run at a time.
+
+Any failed check writes `status = 'failed'` and an `error_message` naming the
+check and both numbers, and suppresses the Healthchecks ping — the missing ping
+is what actually reaches a human. Healthchecks grace period set to 28 hours: four
+hours of slack for a late start or a retry, without letting a fully missed day
+pass unnoticed. On the first run of any weekday there is no reference, so check 3
+is skipped and the skip is logged rather than passed silently.
+
+Required `job_runs.mode` (`daily` | `weekly` | `backfill`, CHECK-constrained) to
+make check 3 workable: without it the ~1,200-row backfill becomes the reference
+for the next run on that weekday and fails it correctly by the rule and wrongly
+in fact, as would every manual `--mode weekly` test. The column stores the
+*resolved* window rather than the argument passed, since a scheduled run passes
+nothing and derives its mode from the date — the log should record what the run
+did, not what it was asked.
 
 **2026-08-19 — Daily collection with a tiered window, replacing weekly.**
 Weekly collection cannot produce a day-7 reading. A video published the day
@@ -449,6 +508,13 @@ measured with the same yardstick.
 The baseline uses lifetime totals of mature videos while the scored video is only
 7 days old, so most scores land below 1.0. That's fine for ranking, but shown as
 "180% of normal" it invites the wrong reading.
+*Annotated 2026-08-19 — the rule stands, the reasoning does not. "Most scores
+land below 1.0" was true while the baseline used lifetime totals against a
+7-day numerator. Both windows are now age-matched, so scores cluster near 1.0
+and a percentage would read closer to the truth than it used to. It is still
+banned, now for the original objection alone: a ratio shown as a percentage
+invites "180% of normal" to be read as a share of something rather than a
+multiple of a median.*
 
 **2026-08-15 — Channel list stored as table rows, not in code.**
 Adding a channel should be a new row, not a code change.
@@ -461,17 +527,7 @@ Nothing in the prototype needs identity, and auth is pure scope cost.
 
 ## Open questions
 
-- **Failure threshold for the collection job.** Expected row counts now differ
-  by weekday: ~400 on Monday, ~120 otherwise. A flat threshold would flag every
-  Monday or miss every Tuesday. `channels_processed < 40` is weekday-independent
-  and probably the primary check; a secondary comparison against the last
-  successful run *of the same weekday* would catch partial failures. Undefined,
-  this gets invented silently at implementation time.
-- **Where the scoring calculation runs** — on read in a database view, or
-  materialised on a schedule. The front-end contract decision assumes a view;
-  whether that view is computed live or refreshed nightly is still open and
-  depends on how slow the median-over-15-videos query turns out to be at this
-  volume.
+
 - **When the 90-day window swaps from the lifetime proxy to real snapshots.**
   Data starts existing three months in, but coverage will be partial for a long
   time — only videos published after collection began ever reach a real day-90

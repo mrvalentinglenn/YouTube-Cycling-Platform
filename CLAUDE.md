@@ -135,8 +135,8 @@ present.
 Composite primary key `(video_id, snapshot_date)` — one row per video per run,
 and re-running the same day overwrites rather than duplicates.
 
-~1,400 new rows per week: ~960 from the daily 8-day runs, ~400 from the Monday
-90-day sweep. This table only grows.
+~1,120 new rows per week: ~720 from the six daily 8-day runs at ~120 each, ~400
+from the Monday 90-day sweep. This table only grows.
 
 Row counts differ by weekday. A Monday run writing ~400 rows is normal; a
 Tuesday run writing ~400 is not. `job_runs.snapshots_written` must be read
@@ -160,6 +160,7 @@ that a failed or partial run is visible after the fact.
 | `started_at` | timestamptz | Written when the run begins |
 | `finished_at` | timestamptz, null | Written on completion; stays null if the job dies |
 | `status` | text | `running` \| `success` \| `failed` |
+| `mode` | text | `daily` \| `weekly` \| `backfill` — the resolved window, not the argument passed |
 | `channels_processed` | integer | Expect 40 |
 | `snapshots_written` | integer | Expect ~400 |
 | `error_message` | text, null | Populated on failure |
@@ -388,9 +389,14 @@ indefinitely.
 
 **Front-end contract.** The front end reads two fields per video per window:
 `outlier_score` and `is_provisional`. How the baseline is computed lives in a
-database view behind those fields. Changing the proxy, the pool or the
-threshold is a SQL change the front end never sees. This is what makes the
-prototype buildable now without rework later.
+database view behind those fields. Changing the proxy, the pool or the threshold
+is a SQL change the front end never sees. This is what makes the prototype
+buildable now without rework later.
+
+The view is **live**, not materialised — it recomputes on read, so it can never
+serve stale scores. Switching to a materialised view refreshed by the collection
+job is a change behind the same two fields, to be made only if the median query
+measurably slows the page once real snapshots exist.
 
 ## Prototype features — must have
 
@@ -428,7 +434,7 @@ doing, without navigating.
 
 Transcript summaries; the "why did it work" auto-tagging layer; cross-category
 benchmarking; weekly digest email (planned for n8n, post-prototype); a "how the Outlier Score works" page;
-filter; daily collection; Instagram/TikTok; user accounts; more than 40 channels.
+Instagram/TikTok; user accounts; more than 40 channels.
 A publication-date filter on the 90-day window (6 months / 1 year / 2 years /
 all time). Would remove the age skew in absolute 90-day rankings. Parked
 deliberately — explain it rather than build it.
@@ -474,12 +480,12 @@ Front-end stack and hosting are deliberately undecided — the collection job do
 
 ## Collection job requirements
 
-The weekly job must:
+The collection job must:
 
 1. Read the channel list from the `channels` table — never from a hardcoded list.
 2. For each channel, fetch the uploads playlist, then video details in batches
    of 50. Never use `search.list` (100 quota units per call).
-3. 3. Filter to videos published inside the current window: 8 days on Tue–Sun, 90
+3. Filter to videos published inside the current window: 8 days on Tue–Sun, 90
    days on Monday. This is the *collection* window — which videos get
    re-measured — and is deliberately not the baseline window. Videos past 90
    days barely move; re-fetching them daily would be thousands of rows to watch
@@ -492,9 +498,20 @@ The weekly job must:
    error.
 7. Ping the Healthchecks.io URL as the final action, only on full success.
 
-Fail loudly. Expected row counts differ by weekday: ~400 on Monday, ~120
-otherwise. A run writing far fewer than expected for its weekday must not
-report success.
+**Fail loudly — three checks, all of which must pass for `status = 'success'`.**
+
+1. **Completeness.** `channels_processed` equals the number of channel rows read
+   at the start of the run. Never a hardcoded 40 — the channel list is data.
+2. **Consistency.** `snapshots_written` equals the number of videos found inside
+   the window. Catches a partial write without needing to know what a normal
+   figure looks like.
+3. **Volume.** `snapshots_written` is at least 50% of the last successful run of
+   the same weekday *and the same mode*. Skipped, and logged as skipped, when no
+   such run exists.
+
+A failed check writes `status = 'failed'` and an `error_message` naming the check
+and both numbers, and suppresses the Healthchecks ping. The Healthchecks grace
+period is 28 hours.
 
 ### Modes
 
