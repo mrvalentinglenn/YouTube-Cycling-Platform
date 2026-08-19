@@ -22,14 +22,27 @@ All 40 channels compiled and imported across the four categories, 10 each. A
 duplicate `channel_id` between two influencer channels was caught on import and
 resolved.
 
-Scoring model settled this session. The v1/v2 split is gone: the prototype ships
-one model with a user-facing toggle between a 7-day and a 90-day window, both
-age-matched. Collection moves from weekly to daily with a tiered window, which
-is what makes an exact day-7 reading possible. Front-end layout fixed —
-see `preview.png`.
+Scoring model settled: the v1/v2 split is gone: the prototype ships one model
+with a user-facing toggle between a 7-day and a 90-day window, both age-matched.
+Collection moves from weekly to daily with a tiered window, which is what makes
+an exact day-7 reading possible. Front-end layout fixed — see `preview.png`.
 
-Nothing built yet — no collection script, no GitHub Actions workflows, no front
-end. `CLAUDE.md` updated to match the decisions below.
+Collection script `scripts/collect.py` built through stage 3 of `NEXT_STEPS.md`
+and committed. It reads the channel list from the `channels` table, resolves each
+uploads playlist, fetches video details in batches of 50, and writes to `videos`
+(insert-only) and `video_snapshots` (upsert on the composite key). Failures are
+isolated per channel: one bad channel is reported and skipped, never fatal to the
+run.
+
+First full run over all 40 channels: 40 processed, 0 failed, 1,959 videos, 120
+quota units, 34.7 seconds. Idempotency verified by re-running — 0 new rows in
+`videos`, all snapshot rows overwritten rather than duplicated. Nullable
+engagement confirmed against real data: 80 videos with likes hidden and 3 with
+comments disabled, all stored as NULL rather than 0.
+
+Not yet built: the tiered window and `--mode` argument (stage 4), the backfill
+run, `job_runs` writes, the GitHub Actions workflow, the Healthchecks ping, and
+the front end. Collection is therefore not yet live — nothing runs on a schedule.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
@@ -42,6 +55,39 @@ that specific day.
 ---
 
 ## Decisions
+
+**2026-08-19 — Backfill depth raised from ~30 to 100 videos per channel.**
+Measured rather than assumed. The first full run over all 40 channels wrote
+1,959 videos, and grouping those by format showed the Shorts/long-form split is
+far more lopsided than the original ~30 figure allowed for: Decathlon CMA CMG
+Team is 46 Shorts to 4 long-form, Red Bull Bike 45 to 5, Scott Sports 44 to 6,
+Canyon 43 to 7. At roughly one long-form video in twelve, a 30-video backfill
+would have yielded 2–3 long-form reference videos for a brand channel — against
+a minimum of 10. The headline feature would have been Provisional on long-form
+for most of the brands category on day one, which is the exact failure the
+2026-08-17 backfill decision was written to prevent, reappearing through the
+format split rather than through publish dates.
+
+100 was chosen over 50 or 60 because it clears the middle of the distribution
+outright — Cube 10, GCN 13, Nero 14, GTN 15, Merida 16 long-form in 50 videos
+all comfortably exceed the threshold at 100 — and brings the worst cases within
+sight without pretending to fix them. Cost is not the constraint it might look
+like: 100 videos is ~4 quota units per channel, ~160 for the whole backfill,
+against 10,000 a day, and it runs exactly once. Storage goes from ~1,200 rows to
+~4,000, immaterial against 500 MB.
+
+Two consequences accepted. Backfill now needs pagination, since 100 videos is
+two pages of 50 — but the 90-day Monday window needs pagination regardless (a
+single page reaches back only ~2.5 months on a channel posting at Canyon's rate),
+so this is not extra machinery. And it does not rescue thin channels: Matt Hauser
+has 9 videos in total and 0 Shorts, so no depth figure helps him. That is
+correctly the Provisional label's job, not the backfill's.
+
+Rejected alternative: varying the depth per channel based on its observed Shorts
+ratio. Better on paper, but it turns a loop with a counter into an adaptive
+algorithm, in the one code path that runs a single time. Supersedes the "~30
+videos" figure in the 2026-08-17 backfill decision; the reasoning there stands
+unchanged.
 
 **2026-08-19 — Scoring runs in a live view, not a materialised one.**
 Both options present the identical interface to the front end — `SELECT

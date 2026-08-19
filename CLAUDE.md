@@ -62,7 +62,9 @@ them, the answer is already no.
 
 - **Quota:** 10,000 units/day, free tier. `search.list` costs 100 units per call
   and must be avoided. Fetching a channel's uploads playlist then video details
-  costs ~1 unit per 50 items. 40 channels weekly ≈ a couple hundred units/week.
+  costs ~1 unit per 50 items. Measured: a full run over all 40 channels fetching
+  one page each cost 120 units. A daily 8-day run costs far less, since the walk
+  stops at the window. The one-off backfill costs ~160.
 - **Available per public video:** views, likes, comments, duration, publish date,
   thumbnail, title, description, tags.
 - **Shorts detection:** no official API flag. Duration ≤ 3 minutes is ~95%
@@ -522,7 +524,7 @@ The script takes an optional `--mode` argument:
 | *(none)* | Derived from today's date: 90 on Monday, 8 otherwise | Default — what GitHub Actions runs |
 | `weekly` | 90 days | Manual override, for testing the Monday path on a non-Monday |
 | `daily` | 8 days | Manual override |
-| `backfill` | ~30 videos per channel, ignoring publish date | Once, before the first scheduled run |
+| `backfill` | 100 videos per channel, ignoring publish date | Once, before the first scheduled run |
 
 Default-by-date means the scheduled workflow passes no argument and cannot be
 scheduled with the wrong mode. The overrides exist so the 90-day path can be
@@ -533,14 +535,25 @@ read channels, walk uploads playlist, batch video details by 50, insert to
 `videos`, upsert to `video_snapshots`, log to `job_runs`. Only the window
 differs. Two files would mean two places to fix every bug.
 
-**Backfill.** For each channel, walk the uploads playlist back ~30 videos
+**Backfill.** For each channel, walk the uploads playlist back 100 videos
 regardless of publish date, insert into `videos`, and write one
-`video_snapshots` row each dated today. ~1,200 videos, ~25 quota units.
+`video_snapshots` row each dated today. ~4,000 videos, ~160 quota units. 100
+videos is two pages of 50, so the backfill requires pagination.
 
 Without it there is no baseline: only videos inside the collection window would
 enter `videos`, giving 8–9 usable reference videos for a weekly uploader and
 2–3 for a monthly one — both under the minimum of 10. The relative score, the
 product's headline feature, could not be computed for a single channel.
+
+**Why 100 and not 30.** The depth is set by the Shorts/long-form split, not by
+publish dates. Measured across all 40 channels, brand channels run around one
+long-form video in twelve — Decathlon 46 Shorts to 4 long-form, Red Bull Bike
+45 to 5, Canyon 43 to 7. A 30-video backfill would give those channels 2–3
+long-form reference videos against a minimum of 10, so the headline feature
+would be Provisional on long-form across most of the brands category on day one.
+100 clears the middle of the distribution outright and brings the worst cases
+close. It does not rescue genuinely thin channels — one triathlete channel has 9
+videos in total — and is not meant to; that is the Provisional label's job.
 
 The backfill snapshot is also what the 90-day window reads until real 90-day
 snapshots exist.
