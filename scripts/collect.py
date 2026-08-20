@@ -60,6 +60,12 @@ BACKFILL_VIDEO_LIMIT = 100
 # this is an unofficial endpoint with no reason to be hammered.
 SHORTS_CHECK_DELAY_SECONDS = 0.2
 
+# The volume check (see run_checks()) fails a run whose snapshots_written
+# falls below this fraction of the reference run's. 50% is deliberately
+# loose — see DECISIONS.md "Failure threshold defined as three checks, two
+# of them history-free".
+VOLUME_CHECK_MIN_RATIO = 0.5
+
 # ISO 8601 durations from the API look like "PT4M13S" or "PT1H2M3S": the
 # letters mark hours/minutes/seconds and any of the three groups can be
 # absent. This matches each optional group and defaults missing ones to 0
@@ -454,6 +460,168 @@ def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapsh
     }
 
 
+def start_job_run(resolved_mode):
+    """Insert the job_runs row marking the start of this run, before
+    anything else happens, and return its id so the end-of-run update
+    (finish_job_run) knows which row to update.
+
+    If this insert itself fails, there is nowhere left to record that
+    failure — job_runs *is* the record. So this prints and exits rather
+    than continuing a run nothing will ever log.
+    """
+    try:
+        response = (
+            supabase.table("job_runs")
+            .insert(
+                {
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "running",
+                    "mode": resolved_mode,
+                }
+            )
+            .execute()
+        )
+    except Exception as e:
+        print(f"Failed to write the starting job_runs row: {e}")
+        sys.exit(1)
+
+    return response.data[0]["id"]
+
+
+def finish_job_run(job_run_id, status, channels_processed, snapshots_written, error_message):
+    """Update the job_runs row with how the run ended. Called from a
+    `finally` block in main() so it runs whether the run succeeded, failed
+    a check, or raised an exception partway through — the only way this
+    update does *not* happen is the process being killed outright, and a
+    row permanently stuck at 'running' is exactly what should mean that.
+    """
+    try:
+        (
+            supabase.table("job_runs")
+            .update(
+                {
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "status": status,
+                    "channels_processed": channels_processed,
+                    "snapshots_written": snapshots_written,
+                    "error_message": error_message,
+                }
+            )
+            .eq("id", job_run_id)
+            .execute()
+        )
+    except Exception as e:
+        print(f"Failed to write the finishing job_runs row: {e}")
+
+
+def find_reference_run(resolved_mode, today_weekday):
+    """Find the most recent successful run with the same resolved mode,
+    on the same weekday as today, for the volume check. Returns a dict
+    with started_at and snapshots_written, or None if no such run exists
+    yet — expected (and not itself a failure) for the first run of any
+    weekday/mode combination.
+
+    job_runs is an operational log, not the analytical data — at roughly
+    one row a day it is nowhere near Supabase's 1,000-row default query
+    cap for a long time. If that ever changes, this needs the same
+    .range() paging fix_shorts_classification.py needed for videos.
+    """
+    response = (
+        supabase.table("job_runs")
+        .select("started_at,snapshots_written")
+        .eq("status", "success")
+        .eq("mode", resolved_mode)
+        .order("started_at", desc=True)
+        .execute()
+    )
+
+    for candidate in response.data:
+        started_at = datetime.fromisoformat(candidate["started_at"].replace("Z", "+00:00"))
+        if started_at.weekday() == today_weekday:
+            return candidate
+    return None
+
+
+def run_checks(
+    channels_read,
+    channels_processed,
+    total_videos_found,
+    total_snapshots_written,
+    resolved_mode,
+    snapshot_date,
+):
+    """Run the three fail-loudly checks from CLAUDE.md. Returns
+    (messages, failures): messages is every check's outcome, in order, for
+    the run summary; failures holds only the FAILED lines, already
+    naming both numbers, so main() can join them straight into
+    job_runs.error_message. An empty failures list means the run passes
+    all three and is a 'success'.
+    """
+    messages = []
+    failures = []
+
+    # Check 1 — completeness. channels_processed is incremented once per
+    # loop iteration in main(), independently of channels_read (the count
+    # returned by the channels-table query) — comparing the two catches a
+    # bug that silently drops channels from the loop, not just a channel
+    # whose own API call failed (that's already visible per-channel above).
+    if channels_processed == channels_read:
+        messages.append(
+            f"Completeness: OK — processed {channels_processed}/{channels_read} channels read"
+        )
+    else:
+        line = (
+            f"Completeness: FAILED — processed {channels_processed} channels, "
+            f"expected {channels_read} (channels read from the channels table)"
+        )
+        messages.append(line)
+        failures.append(line)
+
+    # Check 2 — consistency. The run compared against itself: every video
+    # counted as "found" should have produced exactly one video_snapshots
+    # row. No history needed, and correct even on the very first run.
+    if total_snapshots_written == total_videos_found:
+        messages.append(
+            f"Consistency: OK — snapshots_written {total_snapshots_written} "
+            f"equals videos_found {total_videos_found}"
+        )
+    else:
+        line = (
+            f"Consistency: FAILED — snapshots_written {total_snapshots_written} "
+            f"does not equal videos_found {total_videos_found}"
+        )
+        messages.append(line)
+        failures.append(line)
+
+    # Check 3 — volume. The only check needing history, and the only one
+    # that can catch a fetch that succeeds but under-returns (an empty
+    # playlist with no error, where checks 1 and 2 both look fine).
+    reference = find_reference_run(resolved_mode, snapshot_date.weekday())
+    if reference is None:
+        messages.append(
+            f"Volume: SKIPPED — no prior successful '{resolved_mode}' run on "
+            "this weekday to compare against"
+        )
+    else:
+        reference_snapshots = reference["snapshots_written"]
+        threshold = reference_snapshots * VOLUME_CHECK_MIN_RATIO
+        if total_snapshots_written >= threshold:
+            messages.append(
+                f"Volume: OK — {total_snapshots_written} snapshots is at least 50% "
+                f"of the reference {reference_snapshots} (run on {reference['started_at']})"
+            )
+        else:
+            line = (
+                f"Volume: FAILED — {total_snapshots_written} snapshots is below 50% "
+                f"of the last successful '{resolved_mode}' run on this weekday "
+                f"({reference_snapshots} snapshots, run on {reference['started_at']})"
+            )
+            messages.append(line)
+            failures.append(line)
+
+    return messages, failures
+
+
 def main():
     start_time = time.monotonic()
 
@@ -481,22 +649,21 @@ def main():
         print(f"Mode: {resolved_mode} ({origin}) — window: {window_days} days")
     print()
 
-    # The channel list is data, never a hardcoded list — adding a channel is
-    # a new row in `channels`, never a code change. This read costs no
-    # YouTube quota; it's a Supabase query.
-    try:
-        channels_response = (
-            supabase.table("channels").select("channel_id,name").execute()
-        )
-    except Exception as e:
-        print(f"Failed to read the channels table: {e}")
-        sys.exit(1)
+    # job_runs gets its 'running' row before anything else happens, so that
+    # even a failure in the very next step (reading the channels table) has
+    # somewhere to be recorded rather than dying silently.
+    job_run_id = start_job_run(resolved_mode)
 
-    channels = channels_response.data
-    if not channels:
-        print("No channels found in the channels table. Nothing to do.")
-        sys.exit(1)
-
+    # These are what finish_job_run() writes no matter how the run ends —
+    # set to their "nothing happened yet" values now, and only updated if
+    # the corresponding step actually completes. status starts as 'failed'
+    # deliberately: an uncaught exception anywhere below leaves it exactly
+    # where a failed run belongs, without needing an explicit assignment in
+    # every possible error path.
+    status = "failed"
+    error_message = None
+    channels_read = 0
+    channels_processed = 0
     channels_succeeded = 0
     failed_channels = []
     total_videos_found = 0
@@ -507,61 +674,120 @@ def main():
     total_head_checks_made = 0
     total_head_check_fallbacks = 0
     total_head_check_reclassified = 0
+    check_messages = []
 
-    for row in channels:
-        channel_id = row["channel_id"]
-        channel_name = row["name"]
-
+    try:
+        # The channel list is data, never a hardcoded list — adding a
+        # channel is a new row in `channels`, never a code change. This
+        # read costs no YouTube quota; it's a Supabase query. Raised as a
+        # plain exception (not sys.exit) so the `finally` block below still
+        # runs and job_runs still records what happened.
         try:
-            stats = collect_channel(
-                channel_id, channel_name, resolved_mode, window_days, snapshot_date
+            channels_response = (
+                supabase.table("channels").select("channel_id,name").execute()
             )
         except Exception as e:
-            # Catches CollectionError (API/Supabase failures we raised
-            # deliberately) as well as anything unexpected — a malformed
-            # API response, a missing key, etc. Either way: name the
-            # channel, print a clear message, and move on. One bad channel
-            # must never abort the run.
-            failed_channels.append(channel_name)
-            print(f"{channel_name}: FAILED — {e}")
-            continue
+            raise RuntimeError(f"failed to read the channels table: {e}") from e
 
-        channels_succeeded += 1
-        total_videos_found += stats["videos_found"]
-        total_videos_inserted += stats["videos_inserted"]
-        total_snapshots_written += stats["snapshots_written"]
-        total_pages_fetched += stats["pages_fetched"]
-        total_videos_skipped += stats["videos_skipped"]
-        total_head_checks_made += stats["head_checks_made"]
-        total_head_check_fallbacks += stats["head_check_fallbacks"]
-        total_head_check_reclassified += stats["head_check_reclassified"]
-        print(
-            f"{channel_name}: {stats['videos_found']} videos found, "
-            f"{stats['videos_inserted']} new in videos, "
-            f"{stats['pages_fetched']} page(s) fetched"
+        channels = channels_response.data
+        if not channels:
+            raise RuntimeError("no channels found in the channels table")
+
+        channels_read = len(channels)
+
+        for row in channels:
+            channel_id = row["channel_id"]
+            channel_name = row["name"]
+            # Incremented for every channel the loop reaches, success or
+            # failure — this is what the completeness check compares
+            # against channels_read, independently of channels_succeeded.
+            channels_processed += 1
+
+            try:
+                stats = collect_channel(
+                    channel_id, channel_name, resolved_mode, window_days, snapshot_date
+                )
+            except Exception as e:
+                # Catches CollectionError (API/Supabase failures we raised
+                # deliberately) as well as anything unexpected — a
+                # malformed API response, a missing key, etc. Either way:
+                # name the channel, print a clear message, and move on.
+                # One bad channel must never abort the run.
+                failed_channels.append(channel_name)
+                print(f"{channel_name}: FAILED — {e}")
+                continue
+
+            channels_succeeded += 1
+            total_videos_found += stats["videos_found"]
+            total_videos_inserted += stats["videos_inserted"]
+            total_snapshots_written += stats["snapshots_written"]
+            total_pages_fetched += stats["pages_fetched"]
+            total_videos_skipped += stats["videos_skipped"]
+            total_head_checks_made += stats["head_checks_made"]
+            total_head_check_fallbacks += stats["head_check_fallbacks"]
+            total_head_check_reclassified += stats["head_check_reclassified"]
+            print(
+                f"{channel_name}: {stats['videos_found']} videos found, "
+                f"{stats['videos_inserted']} new in videos, "
+                f"{stats['pages_fetched']} page(s) fetched"
+            )
+
+        check_messages, check_failures = run_checks(
+            channels_read,
+            channels_processed,
+            total_videos_found,
+            total_snapshots_written,
+            resolved_mode,
+            snapshot_date,
         )
+        if check_failures:
+            status = "failed"
+            error_message = "; ".join(check_failures)
+        else:
+            status = "success"
+    except Exception as e:
+        # Anything that escaped the per-channel try/except above — the
+        # channels-table read failing, an empty channel list, or a genuine
+        # bug — lands here. status and error_message are already primed
+        # for exactly this case.
+        status = "failed"
+        error_message = str(e)
+        print(f"Run failed — {error_message}")
+    finally:
+        # This runs whether the try block finished cleanly, failed a
+        # check, or raised — the only thing that can stop it running is the
+        # process being killed outright, which is precisely what a job_runs
+        # row permanently stuck at 'running' is meant to reveal.
+        finish_job_run(job_run_id, status, channels_processed, total_snapshots_written, error_message)
 
-    duration_seconds = time.monotonic() - start_time
+        duration_seconds = time.monotonic() - start_time
 
-    # --- Summary ------------------------------------------------------------
-    print()
-    print(f"Channels read from table: {len(channels)}")
-    print(f"Channels processed successfully: {channels_succeeded}")
-    if failed_channels:
-        print(f"Channels failed ({len(failed_channels)}): {', '.join(failed_channels)}")
-    else:
-        print("Channels failed: none")
-    print(f"Total videos found: {total_videos_found}")
-    print(f"Videos skipped (unparseable duration): {total_videos_skipped}")
-    print(f"Total rows inserted into videos: {total_videos_inserted}")
-    print(f"Total rows written to video_snapshots: {total_snapshots_written}")
-    print(f"Total playlist pages fetched: {total_pages_fetched}")
-    print(f"Shorts HEAD checks made: {total_head_checks_made}")
-    print(f"HEAD check fallbacks (used duration heuristic): {total_head_check_fallbacks}")
-    print(f"Videos reclassified by HEAD check: {total_head_check_reclassified}")
-    print(f"API calls made: {api_calls}")
-    print(f"Quota units used: {quota_units}")
-    print(f"Duration: {duration_seconds:.1f}s")
+        # --- Summary --------------------------------------------------------
+        print()
+        print(f"Channels read from table: {channels_read}")
+        print(f"Channels processed successfully: {channels_succeeded}")
+        if failed_channels:
+            print(f"Channels failed ({len(failed_channels)}): {', '.join(failed_channels)}")
+        else:
+            print("Channels failed: none")
+        print(f"Total videos found: {total_videos_found}")
+        print(f"Videos skipped (unparseable duration): {total_videos_skipped}")
+        print(f"Total rows inserted into videos: {total_videos_inserted}")
+        print(f"Total rows written to video_snapshots: {total_snapshots_written}")
+        print(f"Total playlist pages fetched: {total_pages_fetched}")
+        print(f"Shorts HEAD checks made: {total_head_checks_made}")
+        print(f"HEAD check fallbacks (used duration heuristic): {total_head_check_fallbacks}")
+        print(f"Videos reclassified by HEAD check: {total_head_check_reclassified}")
+        print(f"API calls made: {api_calls}")
+        print(f"Quota units used: {quota_units}")
+        print(f"Duration: {duration_seconds:.1f}s")
+        print()
+        print("--- Fail-loudly checks ---")
+        for line in check_messages:
+            print(line)
+        print(f"Final status: {status}")
+        if error_message:
+            print(f"Error: {error_message}")
 
 
 if __name__ == "__main__":
