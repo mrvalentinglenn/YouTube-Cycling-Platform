@@ -1,0 +1,76 @@
+name: Collect YouTube snapshots
+
+# Two ways to start a run:
+#   - schedule: the daily automated run. Fires at 06:17 UTC — deliberately
+#     off the top of the hour, since GitHub's scheduler is busiest at :00
+#     and runs queue up or get dropped under that load.
+#   - workflow_dispatch: a manual run from the Actions tab, with an
+#     optional dropdown to override the window for testing (e.g. forcing
+#     the Monday 90-day path without waiting for a Monday).
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          Override the collection window. Leave blank to use the scheduled
+          default (90 days on Monday, 8 days otherwise).
+        required: false
+        type: choice
+        default: ""
+        options:
+          - ""
+          - daily
+          - weekly
+          - backfill
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    # A normal run takes ~2 minutes. 30 minutes is not "give it more time"
+    # headroom — anything approaching that is a hung job, not a slow one,
+    # and a hung job sitting on a runner is worse than one that just fails.
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Caches the packages pip installs below, keyed off
+          # requirements.txt, so a run doesn't re-download every dependency
+          # from scratch every single day.
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run collection job
+        env:
+          # Never hardcoded here — these are read from GitHub's own
+          # encrypted secret store at run time, and GitHub automatically
+          # masks any secret value that appears in the log output.
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          # set -e: if the python command below exits non-zero, this shell
+          # script stops and exits with that same non-zero code — nothing
+          # here catches or downgrades it, so the step (and with it the
+          # whole workflow run) shows as failed in the Actions tab exactly
+          # when collect.py itself failed.
+          set -euo pipefail
+
+          # The scheduled trigger passes no --mode, ever: collect.py derives
+          # its window from today's UTC date on its own, so a schedule can
+          # never be misconfigured into the wrong mode. --mode is only ever
+          # passed on a manual dispatch, and only when the mode input was
+          # actually set to something.
+          if [ -n "${{ inputs.mode }}" ]; then
+            python scripts/collect.py --mode "${{ inputs.mode }}"
+          else
+            python scripts/collect.py
+          fi
