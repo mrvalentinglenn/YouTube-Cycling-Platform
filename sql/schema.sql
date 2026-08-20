@@ -113,3 +113,35 @@ GRANT SELECT, INSERT, UPDATE ON channels TO service_role;
 GRANT SELECT, INSERT, UPDATE ON videos TO service_role;
 GRANT SELECT, INSERT, UPDATE ON video_snapshots TO service_role;
 GRANT SELECT, INSERT, UPDATE ON job_runs TO service_role;
+
+-- ============================================================
+-- Views
+-- ============================================================
+
+-- Convenience view for reading `videos` with the channel name attached, rather
+-- than the opaque UC... id. Nothing is stored: the name lives once on
+-- `channels` and is joined at read time, so a channel rename is a single-cell
+-- change rather than an update across every video row.
+--
+-- security_invoker = true is load-bearing. A Postgres view defaults to running
+-- as its owner, so a view owned by postgres reads through RLS as postgres —
+-- which would let a SELECT grant to anon bypass the seal on the underlying
+-- tables entirely. With security_invoker the view checks the querying role's
+-- own permissions, so the two access layers documented above still hold.
+--
+-- No grants to anon or authenticated. Like the tables, this opens only when the
+-- front end needs it, and only for SELECT.
+create or replace view videos_readable
+with (security_invoker = true) as
+select
+  v.video_id,
+  c.name as channel_name,
+  c.category,
+  v.published_at,
+  v.duration_seconds,
+  v.is_short,
+  v.first_seen_at
+from videos v
+join channels c on c.channel_id = v.channel_id;
+
+revoke all on videos_readable from anon, authenticated;
