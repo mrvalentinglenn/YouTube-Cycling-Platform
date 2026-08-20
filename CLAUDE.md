@@ -215,6 +215,15 @@ When the front end is built it gets both layers opened, narrowly: a `SELECT`
 grant plus a `SELECT` policy for `anon`. No write access is ever granted to
 anything but the collection job.
 
+**Views default to security definer.** A Postgres view runs with the permissions
+of its owner unless told otherwise, so a view created in the Supabase SQL editor
+is owned by `postgres` and reads the underlying tables as `postgres` — straight
+past RLS. The project setting that stops new *tables* being exposed does not
+cover this. Every view in this project must be created `with (security_invoker =
+true)`, so it checks the querying role's own permissions and the two layers above
+still hold. This applies especially to the scoring view, which is the object the
+front end will actually be granted SELECT on.
+
 ### Rule for new fields
 
 Before adding a column, ask whether the value can change after a video is
@@ -465,12 +474,18 @@ at the start of a session before proposing work.
 
 - **Database:** Supabase (Postgres), free tier, EU region. Four tables — see
   Data model above.
-- **Collection job:** Python script, run daily by GitHub Actions at a fixed UTC
-  hour. No keep-alive workflow is needed — daily runs touch Supabase well
-  inside the free tier's 7-day inactivity pause boundary.
+- **Collection job:** Python script, run daily by GitHub Actions at **06:17
+  UTC**, defined in `.github/workflows/collect.yml`. Off the top of the hour
+  deliberately: GitHub's scheduler is busiest at :00 and scheduled runs get
+  queued or dropped under load. Treat this hour as a constant — age is measured
+  by date subtraction, so moving it shifts every score against the existing
+  record. The scheduled run passes no `--mode`; only a manual dispatch does. No
+  keep-alive workflow is needed — daily runs touch Supabase well inside the free
+  tier's 7-day inactivity pause boundary.
 
-- **Monitoring:** Healthchecks.io dead man's switch, pinged on successful
-  completion.
+- **Monitoring:** Healthchecks.io dead man's switch. Period 1 day, grace 4 hours
+  — a 28-hour window. Pinged only when all three failure checks pass; a failed
+  run stays silent, because the missing ping is what reaches a human.
 - **YouTube access:** API key, not OAuth. Restricted to YouTube Data API v3.
 - **Secrets:** `.env` locally, GitHub Secrets in Actions. Never in committed
   files, never hardcoded.
@@ -480,6 +495,12 @@ at the start of a session before proposing work.
 | `YOUTUBE_API_KEY` | YouTube Data API v3 key |
 | `SUPABASE_URL` | Supabase project API URL |
 | `SUPABASE_SECRET_KEY` | Supabase secret key (`sb_secret_...`) |
+| `HEALTHCHECKS_URL` | Healthchecks.io ping URL — **GitHub Secrets only, never in local `.env`** |
+
+`HEALTHCHECKS_URL` is deliberately absent from the local `.env`. If a laptop had
+it, a manual test run would ping Healthchecks and reset the timer — silencing an
+alarm about the *scheduled* job having failed to run. The script treats the
+variable as optional and logs the skip, so the environment decides.
 
 Supabase now issues `sb_publishable_...` and `sb_secret_...` keys in place of the
 legacy `anon` and `service_role` JWTs. The collection job uses the **secret**

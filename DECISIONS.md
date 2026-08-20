@@ -10,74 +10,108 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-19*
+*Last updated: 2026-08-20*
 
-Google Cloud project created, YouTube API key issued and restricted to Data API
-v3. Supabase project on the free tier in an EU region, "Automatically expose new
-tables" off, RLS on. Schema applied from `sql/schema.sql`; all four tables live,
-verified with a test row and a deliberately failing insert against the category
-CHECK constraint. `channels.avatar_url` added.
+**Collection is live.** `scripts/collect.py` runs daily on GitHub Actions at
+06:17 UTC, writes to `videos` and `video_snapshots`, logs every execution to
+`job_runs` with three failure checks, and pings Healthchecks.io only on full
+success. Verified end to end: a run triggered from Actions wrote row 4 of
+`job_runs` and the ping arrived. The first unattended scheduled run is tomorrow
+morning; the first `weekly` run is Monday, and that path has never fired on a
+real Monday.
 
-All 40 channels compiled and imported across the four categories, 10 each. A
-duplicate `channel_id` between two influencer channels was caught on import and
-resolved.
+Infrastructure unchanged: GCP project with a restricted Data API v3 key,
+Supabase free tier in the EU with auto-expose off and RLS on, four tables plus
+the `videos_readable` view, 40 channels across four categories.
 
-Scoring model settled: the v1/v2 split is gone: the prototype ships one model
-with a user-facing toggle between a 7-day and a 90-day window, both age-matched.
-Collection moves from weekly to daily with a tiered window, which is what makes
-an exact day-7 reading possible. Front-end layout fixed — see `preview.png`.
+Data on hand: 3,946 videos, backfilled 100 deep per channel, each with a
+snapshot. That is what the 90-day window reads as its lifetime proxy, and it is
+the half of the demo that could not have been collected retroactively — so the
+irrecoverable part is done. The 7-day window is the half still waiting on the
+clock, since a day-7 reading only exists if the job ran that day.
 
-Collection script `scripts/collect.py` built through stage 5 of `NEXT_STEPS.md`
-and committed. It reads the channel list from the `channels` table, walks each
-uploads playlist with pagination, derives its window from the date or from
-`--mode`, and writes to `videos` (insert-only) and `video_snapshots` (upsert on
-the composite key). Failures are isolated per channel: one bad channel is
-reported and skipped, never fatal to the run.
+Everything in the collection job was verified by running it rather than by
+reading it, and that is where the session's four bugs came from — every one of
+them a silent failure rather than a crash:
 
-All four modes verified by running them:
+- `P0D` durations (live streams, premieres) crashed three channels on the first
+  backfill; a missing `duration` field crashed a fourth later. Both now skip and
+  count. Three videos in 3,824 took down 7.5% of the channel list.
+- The duration heuristic for `is_short` was wrong on ~19% of Shorts and on
+  nearly half of everything under 180 seconds. HEAD check now wired in; 376
+  existing rows corrected.
+- The Supabase client caps an unpaginated select at 1,000 rows, so the
+  correction script's first dry run silently checked 1,000 of 1,982 and would
+  have reported success having fixed half the data.
+- `videos_readable` defaulted to security definer, which would have read past
+  RLS the moment `anon` got a SELECT grant.
 
-| Mode | Videos | Pages | Quota | Duration |
-|---|---|---|---|---|
-| stage 3, one page per channel | 1,959 | 40 | 120 | 34.7s |
-| `daily` (8 days) | 129 | 40 | 108 | 24.7s |
-| `weekly` (90 days) | 1,382 | 55 | 150 | 32.6s |
-| `backfill` (100/channel) | 3,824 | 78 | 196 | 46.4s |
+Not built: the scoring view, and the front end. Nothing yet reads the data — the
+Outlier Score, the medians and `is_provisional` are computed nowhere.
 
-Idempotency verified by re-running — 0 new rows in `videos`, all snapshot rows
-overwritten rather than duplicated. Nullable engagement confirmed against real
-data: 80 videos with likes hidden, 3 with comments disabled, all stored as NULL.
-Backfill complete: 3,824 videos across all 40 channels, none failed.
-
-Three bugs found by running rather than by reading, all in the same area:
-determining a video's duration and format.
-
-`P0D` durations — YouTube's answer for live streams and premieres, which have no
-playable length — crashed three channels outright on the first backfill. A
-missing `contentDetails.duration` field crashed a fourth later. Both are now
-skipped and counted rather than written as 0 seconds, which would have filed a
-multi-hour stream as a Short. Three videos in 3,824 took down 7.5% of the
-channel list; the size of a bug says nothing about its blast radius.
-
-The third is the duration heuristic itself, which is wrong on roughly one in
-five of this dataset's Shorts. The verified HEAD check is now wired into
-`collect.py` for every video under 180 seconds. The correction of the 375
-existing rows is the immediate open work — see the decision below.
-
-Not yet built: `job_runs` writes, the GitHub Actions workflow, the Healthchecks
-ping, and the front end. Collection is therefore not yet live — nothing runs on
-a schedule, and every day before that is data that cannot be recovered.
-
-**Next steps:** See `NEXT_STEPS.md`.
-
-**After that:** get the snapshot job running. It has to start collecting before
-anything else is built, because the API holds no history and every day not
-recorded is data that can never be recovered. This is now more acute than under
-weekly collection: a video's day-7 reading exists only if the job was running on
-that specific day.
+**Next steps:** See `NEXT_STEPS.md`. The scoring view is the immediate work.
 
 ---
 
 ## Decisions
+
+**2026-08-20 — Backfill depth stays at 100; the shortfall was misclassification,
+not depth.**
+Closes the question parked on 2026-08-19. After the correction run reclassified
+376 rows, the three channels below the 10-video long-form threshold became two,
+and both are cases depth cannot fix. Decathlon went 6 → 10, Red Bull Bike 8 → 11,
+Canyon 13 → 16. The apparent depth problem was almost entirely a Shorts
+heuristic wrongly filing short regular videos as Shorts — exactly the channels
+whose profile caused it.
+
+Raising to 130 was considered and declined. At Malachi Cashmore's observed ratio
+it would add ~2.7 long-form videos, so it would probably move one channel across
+the line and definitely not the other: Matt Hauser has 9 videos in total. That is
+a global parameter changed to shift one channel over a threshold, on a channel
+that posts regularly and will cross it unaided within weeks. The Provisional
+label clearing itself channel by channel is the designed behaviour, not a gap
+being tolerated — and having a live example of it doing so is worth more in an
+interview than a uniformly green board.
+
+Secondary reason: a second backfill writes ~1,200 snapshot rows dated today on
+channels that already have one from two days ago, giving those channels a denser
+early history than the rest for no analytical reason.
+
+**2026-08-20 — `videos_readable` view, and views default to security definer.**
+A convenience view joining `videos` to `channels` so the channel name is readable
+without the opaque `UC...` id. Nothing is stored: the name lives once on
+`channels` and is joined at read time.
+
+The reason this is a decision and not a footnote is what was found on inspecting
+it. A Postgres view runs with the permissions of its **owner** by default, not
+the querying role. Created through the Supabase SQL editor it is owned by
+`postgres`, so it reads the underlying tables as `postgres` — straight past the
+RLS seal on all four. The 2026-08-16 two-layer access design would have been
+defeated by a convenience object the moment `anon` was granted SELECT on it,
+which is precisely what the front end will do.
+
+Nothing was exposed: `anon` and `authenticated` held only `REFERENCES`, `TRIGGER`
+and `TRUNCATE`, none of which mean anything on a view, and no `SELECT`. Recreated
+with `security_invoker = true` so it checks the querying role's own permissions,
+and the leftover grants revoked. Mirrored into `schema.sql` with the reasoning in
+a comment.
+
+Two things worth carrying forward. The Supabase project setting that stops new
+*tables* being exposed did not cover a view created by hand, so "auto-expose is
+off" is not a guarantee that covers every object type. And the scoring view must
+be created with `security_invoker = true` from the start — it is the object the
+front end will actually read, so the same default would be a real hole rather
+than a latent one.
+
+**2026-08-20 — `HEALTHCHECKS_URL` set in GitHub Secrets only, never in local
+`.env`.**
+The ping is meant to assert "the scheduled job ran", not "the script ran
+somewhere". If a laptop had the URL, a manual `--mode daily` test would ping
+Healthchecks and reset the timer — silencing an alarm about the scheduled run
+having failed, at exactly the moment the alarm was doing its job. The script
+treats the variable as optional and logs the skip explicitly, so the same code
+pings from Actions and stays quiet locally, with the environment making the
+decision rather than a flag someone has to remember.
 
 **2026-08-19 — Duration heuristic rejected as the sole Shorts test; HEAD check
 promoted to required.**
@@ -119,7 +153,7 @@ gets a HEAD check before `is_short` is written, ~120 requests on a daily run.
 Correction is a separate one-off script over the ~3,000 rows already marked as
 Shorts — kept out of `collect.py` deliberately, because unlike backfill it shares
 almost none of the collection logic, and the 2026-08-19 one-script decision
-turned on shared logic
+turned on shared logic rather than on file count.
 
 *Resolved 2026-08-19 — the cause was the opposite of what was assumed.* YouTube
 routes requests to `/shorts/{id}` through a regional GDPR consent redirect, and
@@ -820,3 +854,23 @@ it trades a locked constraint for noisier baselines, and it was solving the
 wrong problem. The rework worry it was meant to address is handled instead by
 the front-end contract — `outlier_score` plus `is_provisional`, with baseline
 logic behind a view — which makes the threshold changeable in SQL at any time.
+
+**Raising backfill depth from 100 to 130 videos per channel.**
+Considered to lift the last channels over the 10-video long-form threshold. The
+quota cost is genuinely nil — ~200 units, once. Declined because the arithmetic
+does not deliver: at Malachi Cashmore's observed ratio, 30 more videos add ~2.7
+long-form, so it probably moves one channel and definitely not Matt Hauser, who
+has 9 videos in total. Changing a global parameter to shift one channel across a
+line it will cross unaided within weeks is the wrong trade, and the Provisional
+label clearing itself is the designed behaviour rather than a defect being
+tolerated. Also writes ~1,200 snapshot rows dated today on channels that already
+have one, giving them a denser early history than the rest for no analytical
+reason. See the 2026-08-20 decision.
+
+**Putting `HEALTHCHECKS_URL` in the local `.env` as well as GitHub Secrets.**
+The obvious default, and wrong. A manual `--mode daily` test from a laptop would
+ping Healthchecks and reset the 28-hour timer — silencing an alarm about the
+scheduled run having failed, at the exact moment the alarm was earning its keep.
+The ping must assert "the scheduled job ran", not "the script ran somewhere".
+Secrets-only, with the script treating the variable as optional and logging the
+skip, means the environment decides and nobody has to remember a flag.
