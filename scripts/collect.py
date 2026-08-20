@@ -622,6 +622,34 @@ def run_checks(
     return messages, failures
 
 
+def ping_healthchecks(url):
+    """Ping the Healthchecks.io dead man's switch — a GET request that
+    tells Healthchecks "this run happened and succeeded." Healthchecks
+    itself does the actual alerting: if a ping doesn't arrive within its
+    configured grace period, *it* notifies a human. So this function's job
+    is narrow — send the ping, report whether it went out — and its
+    failure must never look like a collection failure: the run already
+    succeeded by the time this is called, and a missing job_runs status
+    change is not what a dead man's switch is for. No retry: a dropped
+    notification here just means Healthchecks' own timeout logic is what
+    catches it instead, exactly as designed.
+
+    The URL itself is never printed — it's a credential. Whoever holds it
+    can send a fake "success" ping to this project's Healthchecks check,
+    silencing the alarm without the collection job ever having run.
+    """
+    try:
+        response = requests.get(url, timeout=10)
+    except requests.RequestException as e:
+        print(f"Healthchecks ping failed: {e}")
+        return
+
+    if response.status_code == 200:
+        print("Healthchecks ping sent.")
+    else:
+        print(f"Healthchecks ping returned unexpected status {response.status_code}.")
+
+
 def main():
     start_time = time.monotonic()
 
@@ -648,6 +676,13 @@ def main():
     else:
         print(f"Mode: {resolved_mode} ({origin}) — window: {window_days} days")
     print()
+
+    # Deliberately optional, and deliberately read here rather than
+    # validated at startup like the other three variables: this is set in
+    # GitHub Actions but NOT in the local .env, so a manual test run from a
+    # laptop can never accidentally silence an alarm about the *scheduled*
+    # job failing to run.
+    healthchecks_url = os.environ.get("HEALTHCHECKS_URL")
 
     # job_runs gets its 'running' row before anything else happens, so that
     # even a failure in the very next step (reading the channels table) has
@@ -788,6 +823,20 @@ def main():
         print(f"Final status: {status}")
         if error_message:
             print(f"Error: {error_message}")
+
+        # The very last thing this script does, and only on a fully
+        # successful run — job_runs has already been updated above, so
+        # this ping is purely the external notification, not part of what
+        # determines success or failure. A failed run must NOT ping: the
+        # missing ping is what actually reaches a human, so pinging anyway
+        # would silence the alarm on a run that needs attention.
+        if status == "success":
+            if healthchecks_url:
+                ping_healthchecks(healthchecks_url)
+            else:
+                print("Healthchecks ping skipped — HEALTHCHECKS_URL is not set.")
+        else:
+            print("Healthchecks ping skipped — run did not succeed.")
 
 
 if __name__ == "__main__":

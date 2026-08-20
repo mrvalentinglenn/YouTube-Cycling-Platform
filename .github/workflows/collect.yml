@@ -56,6 +56,12 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          # Deliberately set here and NOT in the local .env: collect.py
+          # treats a missing HEALTHCHECKS_URL as "skip the ping, carry on",
+          # so if this were also in .env a manual test run from a laptop
+          # could send a real success ping and silence an alarm about the
+          # *scheduled* job never having run.
+          HEALTHCHECKS_URL: ${{ secrets.HEALTHCHECKS_URL }}
         run: |
           # set -e: if the python command below exits non-zero, this shell
           # script stops and exits with that same non-zero code — nothing
