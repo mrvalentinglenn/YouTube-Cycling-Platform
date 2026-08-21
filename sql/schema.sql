@@ -105,14 +105,55 @@ ALTER TABLE job_runs ENABLE ROW LEVEL SECURITY;
 -- granted explicitly. service_role is the role the collection job
 -- authenticates as (via the Supabase secret key), so it needs to read
 -- existing rows (to avoid re-inserting videos) and write new ones.
--- No DELETE is granted: nothing in the job removes rows. Nothing is
--- granted to anon or authenticated — public read access for the front
--- end is a deliberate later step, not a default.
+-- No DELETE is granted: nothing in the job removes rows. -- Nothing is granted to authenticated. Public read access for anon was a
+-- deliberate later step rather than a default, taken 2026-08-21 — see the
+-- block below.
 -- ============================================================
 GRANT SELECT, INSERT, UPDATE ON channels TO service_role;
 GRANT SELECT, INSERT, UPDATE ON videos TO service_role;
 GRANT SELECT, INSERT, UPDATE ON video_snapshots TO service_role;
 GRANT SELECT, INSERT, UPDATE ON job_runs TO service_role;
+-- ================================================================
+-- Front-end access — anon, SELECT only.
+--
+-- Added 2026-08-21, when the scoring view was built. Until then no role but
+-- service_role held any privilege on anything here.
+--
+-- scoring_view is security_invoker = true, so it checks the QUERYING role's
+-- permissions on the underlying tables rather than its creator's. anon
+-- therefore needs both layers opened on the three tables the view reads, not
+-- only on the view itself. Granting on the view alone returns empty results
+-- with no error — the RLS failure mode, and the hardest kind to debug.
+--
+-- The alternative was to make scoring_view a definer view so it could read
+-- the tables on anon's behalf while the tables stayed sealed. Rejected — see
+-- DECISIONS.md 2026-08-21.
+--
+-- SELECT only. No INSERT, UPDATE or DELETE to anon under any circumstances:
+-- the collection job remains the only writer.
+--
+-- job_runs is deliberately absent. The view never reads it, and it holds our
+-- own operational data rather than public YouTube data. Verified: as anon,
+-- `select count(*) from job_runs` returns 42501 permission denied.
+-- ================================================================
+
+grant select on videos          to anon;
+grant select on channels        to anon;
+grant select on video_snapshots to anon;
+grant select on scoring_view    to anon;
+
+-- RLS applies to tables, not views, so there is no policy for scoring_view —
+-- its grant plus these three policies are what govern it. `using (true)`
+-- is the row filter: true for every row, so all of them. The grant above is
+-- what keeps that meaning read and nothing more.
+create policy "anon reads videos"
+  on videos for select to anon using (true);
+
+create policy "anon reads channels"
+  on channels for select to anon using (true);
+
+create policy "anon reads video_snapshots"
+  on video_snapshots for select to anon using (true);
 
 -- ============================================================
 -- Views
