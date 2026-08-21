@@ -12,48 +12,132 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 *Last updated: 2026-08-20*
 
-**Collection is live.** `scripts/collect.py` runs daily on GitHub Actions at
-06:17 UTC, writes to `videos` and `video_snapshots`, logs every execution to
-`job_runs` with three failure checks, and pings Healthchecks.io only on full
-success. Verified end to end: a run triggered from Actions wrote row 4 of
-`job_runs` and the ping arrived. The first unattended scheduled run is tomorrow
-morning; the first `weekly` run is Monday, and that path has never fired on a
-real Monday.
+## Current state
 
-Infrastructure unchanged: GCP project with a restricted Data API v3 key,
-Supabase free tier in the EU with auto-expose off and RLS on, four tables plus
-the `videos_readable` view, 40 channels across four categories.
+*Last updated: 2026-08-21*
 
-Data on hand: 3,946 videos, backfilled 100 deep per channel, each with a
-snapshot. That is what the 90-day window reads as its lifetime proxy, and it is
-the half of the demo that could not have been collected retroactively — so the
-irrecoverable part is done. The 7-day window is the half still waiting on the
-clock, since a day-7 reading only exists if the job ran that day.
+**Collection is unattended.** The first scheduled run fired on its own this
+morning — `job_runs` row 5, 40 channels, 134 snapshots, success, Healthchecks
+pinged. Daily counts sit at 132–134, which is the 8-day window overlapping
+seven-eighths of its videos between runs. The `weekly` path still hasn't
+fired on a real Monday; 24 August is the first.
 
-Everything in the collection job was verified by running it rather than by
-reading it, and that is where the session's four bugs came from — every one of
-them a silent failure rather than a crash:
+**The scoring view is built.** `sql/scoring_view.sql`, 90-day arm only, tall
+shape, `security_invoker = true`, nothing granted to `anon`. 357 ms for a full
+read. Score distribution on long-form views: p25 0.56, p50 1.04, p75 1.92,
+p95 7.21, 2,350 scored rows. A median of 1.04 means the baseline is
+calibrating correctly — a video that performs normally for its channel scores
+1.
 
-- `P0D` durations (live streams, premieres) crashed three channels on the first
-  backfill; a missing `duration` field crashed a fourth later. Both now skip and
-  count. Three videos in 3,824 took down 7.5% of the channel list.
-- The duration heuristic for `is_short` was wrong on ~19% of Shorts and on
-  nearly half of everything under 180 seconds. HEAD check now wired in; 376
-  existing rows corrected.
-- The Supabase client caps an unpaginated select at 1,000 rows, so the
-  correction script's first dry run silently checked 1,000 of 1,982 and would
-  have reported success having fixed half the data.
-- `videos_readable` defaulted to security definer, which would have read past
-  RLS the moment `anon` got a SELECT grant.
+Data on hand: 3,969 videos across 40 channels, up from 3,946 as daily
+collection adds uploads.
 
-Not built: the scoring view, and the front end. Nothing yet reads the data — the
-Outlier Score, the medians and `is_provisional` are computed nowhere.
+Not built: the 7-day arm of the scoring view, which needs day-7 readings that
+first exist around 26–27 August, and the front end.
 
-**Next steps:** See `NEXT_STEPS.md`. The scoring view is the immediate work.
+**Next steps:** See `NEXT_STEPS.md`.
 
 ---
 
 ## Decisions
+
+**2026-08-21 — Baseline pools precomputed per group, not per row; the live
+view stands.**
+The first scoring view timed out entirely on `select * from scoring_view`.
+`EXPLAIN` put the LATERAL join at cost 4,503,624 against ~700 for everything
+else: because the `metrics` CTE is referenced twice it is materialised without
+indexes, so the LATERAL had nothing to look up by and re-scanned and re-sorted
+all ~11,900 rows once per output row — 11,838 times.
+
+Rewritten to compute each channel/format/metric baseline pool once, up front,
+as two parallel arrays. The LATERAL still runs per row but now unnests at most
+16 values. 4,503,624 → 6,187 and a full read in 357 ms, a ~730× reduction.
+
+The crux is taking **16** candidates per pool rather than 15. The spec is the
+last 15 videos excluding the video being scored, and self-exclusion can
+displace the ranking by at most one place — so 16 is exactly enough to
+reconstruct any video's correct pool without knowing in advance which video
+will be scored against it. Drop yourself if present, take the first 15 of what
+remains. 15 would leave 14 for any video inside its own pool.
+
+This closes the "measure it and only switch if it is actually slow" clause of
+the 2026-08-19 live-view decision. It was slow; the cause was the query, not
+the choice of a live view, and fixing the query kept the decision intact. Worth
+keeping as method: the instinct on seeing a timeout is to reach for the
+materialised fallback, and reading the plan first showed the fallback would
+have preserved a query doing 6,000× more work than it needed to.
+
+**2026-08-21 — An ORDER BY inside the view is not a guardrail; nulls-last moves
+to the front-end contract.**
+The view originally ended `order by outlier_score desc nulls last`, on the
+reasoning that a video with no valid baseline must never rank #1 on a card
+with no score printed on it. That ordering is discarded the moment a consuming
+query sorts for itself — which the front end must, since it switches between
+absolute (`value`) and relative (`outlier_score`). So the protection only held
+for a bare `select *`, the one query the product will never run, while still
+costing a sort of ~12,000 rows on every read.
+
+Removed. The requirement is now part of the front-end contract instead:
+Postgres sorts NULLS FIRST on a DESC sort, so every relative ranking must
+specify nulls-last explicitly —
+`.order('outlier_score', { ascending: false, nullsFirst: false })` in
+supabase-js. Recorded here because it is invisible until it is wrong, and when
+it is wrong it looks like a ranking bug rather than a sort-order one.
+
+**2026-08-21 — The Outlier Score is displayed as a multiple: `75×`.**
+Scores range far wider than the design anticipated — p50 1.04, p95 7.21, top
+of the distribution around 75. That is not a broken denominator. It is a
+median correctly describing channels whose view counts are heavily
+right-skewed: Soudal Quick-Step's routine output sits at 2–5K views and an
+Evenepoel recovery documentary took 300K. A mean would have hidden this; the
+median is the reason it shows.
+
+Displaying the number with an explicit `×` satisfies the locked ban on
+percentages more directly than a bare `75.41` does. The 2026-08-15 rule exists
+because "180% of normal" invites reading a ratio as a share of something
+rather than a multiple of a median. `75×` cannot be misread that way.
+
+The large multiples are also the product working rather than a defect to
+soften. A score of 75 says the channel's audience responded to that video in a
+way it does not to the channel's normal output — subject, thumbnail, title, or
+timing. Surfacing that is the premise. A tool that only ever showed 1.2s would
+have nothing to say.
+
+**2026-08-21 — Red Bull Bike's thin long-form baseline: cause identified, no
+action.**
+Manual inspection of the channel showed roughly 18 long-form videos published
+inside the baseline window against the 6 the view computes from. Four
+candidate causes were considered; the two that hold are the backfill's depth
+in *time* rather than in count, and collaboration videos.
+
+At Red Bull's ~9:1 Shorts ratio, 100 uploads-playlist items reaches back only
+a few months of long-form. Trek, at better than 2:1, reaches back to
+2024-08-15 — almost exactly the 24-month baseline ceiling. So the same depth
+figure produces completely different temporal coverage depending on a
+channel's format mix. The backfill-depth question was argued on video counts
+and never on how far back in time the walk reached; this is that blind spot
+surfacing.
+
+Collaboration videos are the second cause and are structural rather than
+fixable: a video co-owned with another channel appears on Red Bull's channel
+page but sits in the partner's uploads playlist, so the API never shows it to
+us at all.
+
+Misclassification was excluded — the HEAD check is verified and every other
+channel's figures are consistent. The 30-day floor accounts for some of the
+gap but not most of it.
+
+No action. Daily collection closes the gap as new long-form uploads accumulate,
+and the Provisional label is doing exactly its job in the meantime. Revisit
+only if it is still thin in a month.
+
+*Annotation to 2026-08-19, "The 90-day window is not capped by publication
+date."* The park is cheaper than it looked. `published_at` is already a column
+on the scoring view, so a publication-date cap is a `WHERE` clause the front
+end adds per request — no view change, nothing behind the front-end contract
+moves. It should therefore stay out of the view: hardcoding 24 months there
+would turn a user-facing toggle into a fixed constant and make the parked
+feature harder to build, not easier.
 
 **2026-08-20 — Backfill depth stays at 100; the shortfall was misclassification,
 not depth.**
@@ -874,3 +958,26 @@ scheduled run having failed, at the exact moment the alarm was earning its keep.
 The ping must assert "the scheduled job ran", not "the script ran somewhere".
 Secrets-only, with the script treating the variable as optional and logging the
 skip, means the environment decides and nobody has to remember a flag.
+
+**A materialised view, when the live scoring view timed out.**
+The obvious response to `select * from scoring_view` failing to finish, and
+the fallback the 2026-08-19 decision explicitly kept in reserve. Rejected
+because reading the plan first showed the problem was not the live/materialised
+choice at all: the LATERAL was re-scanning and re-sorting the whole ~11,900-row
+`metrics` CTE once per output row, costing 4,503,624 against ~700 for the rest
+of the query. Materialising would have preserved a query doing roughly 6,000×
+more work than necessary and paid for it with the stale-data failure mode the
+original decision was written to avoid. Precomputing the baseline pools brought
+a full read to 357 ms and left the live view intact. The fallback remains
+available and is now much less likely to be needed. See the 2026-08-21 decision.
+
+**Fifteen candidates per precomputed baseline pool.**
+The natural figure, since the spec says the last 15 videos — and wrong. A video
+inside its own channel/format pool is removed by the self-exclusion rule, which
+would leave 14, one short, and quietly narrow the baseline for exactly those
+videos most likely to be scored. Sixteen is the correct number: self-exclusion
+can displace the ranking by at most one place, so 16 candidates reconstruct the
+correct 15-video pool for every video, including those never in the pool at all.
+Recorded because 15 is what the spec says and the off-by-one is invisible in the
+output — the median would simply have been computed from a slightly different
+set, with no error and no signal that anything was wrong.

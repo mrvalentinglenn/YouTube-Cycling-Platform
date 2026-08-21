@@ -14,34 +14,37 @@ only on full success. The backfill has run: 3,946 videos across 40 channels.
 
 Collection is live. Nothing further is required to keep it running.
 
-**Two things to check on, without doing anything:**
+**One thing to check on, without doing anything:**
 
-- [ ] Confirm the first scheduled run fires on its own. It has only ever been
-      triggered by hand. Check `job_runs` for a row starting near 06:17 UTC.
 - [ ] Monday's run should record `mode = 'weekly'` and write ~400 rows rather
-      than ~130. That is the date-derived window working; it has never been
-      exercised on a real Monday.
+      than ~134. That is the date-derived window working; it has never been
+      exercised on a real Monday. Next Monday is 24 August.
 
 ---
 
-## Next: the scoring view
+## The scoring view — 90-day arm done
 
-This is the piece between the data and anything viewable. Nothing exists yet.
+`sql/scoring_view.sql` is built and running. Tall shape: one row per video,
+per window, per metric. `security_invoker = true`, nothing granted to `anon`
+yet, no ORDER BY on the view.
 
-1. [ ] Build the view exposing `outlier_score` and `is_provisional` per video,
-       per window, per metric. All baseline logic lives here — median of the
-       last 15 videos, 30 days to 24 months, computed separately for Shorts and
-       long-form, video excluded from its own baseline. See the Scoring section
-       of CLAUDE.md; the spec is locked.
-2. [ ] Live view, not materialised. Measure the median query once it exists; only
-       switch if it is actually slow.
-3. [ ] Give it `security_invoker = true` from the start, as `videos_readable`
-       now has. A view defaults to running as its owner and would read straight
-       past RLS.
-4. [ ] Sanity-check the output against channels you know. Malachi Cashmore and
-       Matt Hauser should both come back provisional on long-form; most channels
-       should be provisional on 7-day, since day-7 readings only exist for
-       videos published since collection began.
+Verified: 357 ms for a full `SELECT *` after the baseline was rewritten to
+precompute pools (the first version timed out). Score distribution on
+long-form views — p25 0.56, p50 1.04, p75 1.92, p95 7.21, 2,350 scored rows.
+A median of 1.04 is the baseline calibrating correctly.
+
+**Still to do:**
+
+1. [ ] Add the 7-day arm as a second `union all` block. Not possible until
+       day-7 readings exist — collection began 19/20 August, so the first
+       videos reach day 7 around 26–27 August. Check for rows before
+       building: a video needs a snapshot dated exactly 7 days after its
+       `published_at`.
+2. [ ] Mirror `scoring_view.sql` into `sql/schema.sql` now the numbers are
+       trusted, so the schema file is a complete description of the database.
+3. [ ] Spot-check the Provisional label against channels you know: Matt
+       Hauser has no Shorts at all, so his Shorts rows should come back with a
+       null score and `is_provisional = true`.
 
 ---
 
@@ -72,6 +75,9 @@ against a view that doesn't work yet means designing against guesses.
       display, before anything goes to a public URL.
 - [ ] Re-run `scripts/fix_shorts_classification.py` at some point to pick up the
       one video that failed on a connection reset. One row; no hurry.
+- [ ] Red Bull Bike returns 6 long-form baseline videos against ~18 visible on
+      the channel. Cause is understood and not a bug — see DECISIONS. No action
+      unless it is still thin in a month.
 
 ---
 

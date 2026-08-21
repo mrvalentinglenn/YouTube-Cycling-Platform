@@ -311,8 +311,28 @@ hitting 12K is far more remarkable than a channel averaging 10K hitting 12K.
 This is the product's core differentiator.
 
 ```
-Outlier Score = views at ~7 days / channel baseline median
+Outlier Score = the video's figure / that channel's baseline median
+(both measured at the same age — see the window table below)
 ```
+
+**7-day window:** views at day 7 / the channel's median day-7 views.
+**90-day window:** views at ~90 days / the channel's median ~90-day views —
+currently the lifetime proxy on both sides, until real 90-day snapshots exist.
+
+The metric is whichever of views, likes or comments the user has selected;
+views is the default.
+
+**Display format: a multiple, written `75×`.** The score is a ratio and must
+read as one. The ban on percentages stands — see below — and the `×` satisfies
+it more directly than a bare number does, because it cannot be misread as a
+share of something.
+
+Scores range wider than "near 1.0" suggests. Measured on long-form views:
+p25 0.56, p50 1.04, p75 1.92, p95 7.21, with a tail reaching ~75. The median
+of 1.04 is the baseline calibrating correctly; the tail is real, and it is the
+product's whole point. Channel view counts are heavily right-skewed — routine
+output at 2–5K views alongside a documentary at 300K — and the median is
+chosen precisely so that skew shows rather than being absorbed.
 
 Baseline specification:
 
@@ -333,8 +353,7 @@ Baseline specification:
 
 **UI constraint:** the Outlier Score must **never** be shown as a percentage
 ("180% of normal"), because that invites the wrong reading. Present it as an
-Outlier Score and lead with the ranking. This holds even though age-matched
-windows put most scores near 1.0.
+Outlier Score and lead with the ranking. Age-matching removes a systematic bias; it does not compress natural variance, and most scores are near 1.0 only in the sense that the median is.
 
 ### Two windows, one version
 
@@ -411,7 +430,18 @@ indefinitely.
 `outlier_score` and `is_provisional`. How the baseline is computed lives in a
 database view behind those fields. Changing the proxy, the pool or the threshold
 is a SQL change the front end never sees. This is what makes the prototype
-buildable now without rework later.
+buildable now without rework later. Two obligations the contract places on the consuming query. Sorting is the
+front end's job — the view carries no `ORDER BY`, because one inside a view is
+discarded the moment the consumer sorts for itself. And Postgres sorts NULLS
+FIRST on a DESC sort, so **every relative ranking must specify nulls-last
+explicitly** or a video with no valid baseline ranks #1 on a card with no score
+printed on it. In supabase-js:
+`.order('outlier_score', { ascending: false, nullsFirst: false })`.
+
+The 90-day pool is uncapped by publication date, so `published_at` is exposed
+as a column and any date cap is a `WHERE` clause the front end adds per
+request. Deliberately not in the view — hardcoding it would turn a possible
+user-facing toggle into a fixed constant.
 
 The view is **live**, not materialised — it recomputes on read, so it can never
 serve stale scores. Switching to a materialised view refreshed by the collection
@@ -442,8 +472,7 @@ ranking and the comparison is meaningless.
 
 **Results.** Four category sections in fixed order: Brands, Professional
 Triathletes, Cycling Teams, Influencers. Each shows the top 3 videos for the
-current filter combination, with thumbnail, duration, title, channel name and
-avatar, and views / comments / likes. A "Show more" button expands to the full
+current filter combination, with rank (#1, #2, #3…), thumbnail, duration, title, channel name and avatar, and views / comments / likes. Under Relative comparison, the card also shows the Outlier Score as a multiple. Rank is positional — the front end derives it from the order of the returned rows, not from a column on the view. A "Show more" button expands to the full
 ranked list for that category.
 
 All four categories are always visible on one page — the cross-category view is
