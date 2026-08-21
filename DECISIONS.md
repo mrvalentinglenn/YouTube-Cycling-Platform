@@ -8,38 +8,227 @@ Move things out of **Open questions** into Decisions once settled. Add to
 ---
 
 
-## Current state
-
-*Last updated: 2026-08-20*
 
 ## Current state
 
 *Last updated: 2026-08-21*
 
-**Collection is unattended.** The first scheduled run fired on its own this
-morning — `job_runs` row 5, 40 channels, 134 snapshots, success, Healthchecks
-pinged. Daily counts sit at 132–134, which is the 8-day window overlapping
-seven-eighths of its videos between runs. The `weekly` path still hasn't
-fired on a real Monday; 24 August is the first.
+**Collection is unattended.** Daily runs fire on their own and land at 132–134
+snapshots, which is the 8-day window overlapping seven-eighths of its videos
+between runs. The `weekly` path still hasn't fired on a real Monday; 24 August
+is the first, and it should record `mode = 'weekly'` with ~400 rows.
 
-**The scoring view is built.** `sql/scoring_view.sql`, 90-day arm only, tall
-shape, `security_invoker = true`, nothing granted to `anon`. 357 ms for a full
-read. Score distribution on long-form views: p25 0.56, p50 1.04, p75 1.92,
-p95 7.21, 2,350 scored rows. A median of 1.04 means the baseline is
-calibrating correctly — a video that performs normally for its channel scores
-1.
+**The scoring view is built, 90-day arm only.** `sql/scoring_view.sql`, tall
+shape, `security_invoker = true`, 357 ms for a full read. Score distribution on
+long-form views: p25 0.56, p50 1.04, p75 1.92, p95 7.21. `anon` holds SELECT on
+`channels`, `videos` and `video_snapshots`; `job_runs` stays sealed.
 
-Data on hand: 3,969 videos across 40 channels, up from 3,946 as daily
-collection adds uploads.
+**The front end reads real data.** `frontend/` holds a Vite + React + React
+Router scaffold with two routes, filter state in the URL, and a working
+Supabase query against `scoring_view`. Verified in the browser: filters survive
+refresh and navigation in both directions, the back button steps one filter
+change, sorting moves between `outlier_score` and `value`, pagination offsets
+the rank correctly, and a 7d query returns zero rows as it should. Nothing is
+styled yet — Tailwind is the next step.
+
+Data on hand: ~3,970 videos across 40 channels.
 
 Not built: the 7-day arm of the scoring view, which needs day-7 readings that
-first exist around 26–27 August, and the front end.
+first exist around 26–27 August; and everything visual in the front end.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
 ---
 
 ## Decisions
+
+**2026-08-21 — Front end is a static SPA: Vite + React + React Router, no
+server.**
+Three options were weighed. A static SPA reading Supabase directly from the
+browser; Next.js with server-side rendering; and vanilla HTML/CSS/JS.
+
+Next.js is the stronger line on a CV and would remove the brief empty state
+before data arrives. Declined because the cost lands in exactly the wrong
+place for this builder. The App Router turns on the server/client component
+boundary, and the filter bar is interactive while the data fetch wants to be
+server-side — so the hardest concept in the framework would be met on the
+headline feature, in week one, by someone whose React experience is a course
+project. That is time spent learning a framework rather than building the
+product, and the user sees no difference.
+
+The CV argument is also weaker than it looks. Being able to say "a SPA,
+because there is nothing to render on a server for read-only public data, and
+Next.js would have cost me concepts the user never sees" is a better interview
+answer than having reached for the default.
+
+Vanilla was listed for completeness and rejected immediately: it means
+hand-building routing and re-rendering, which is the work React already does
+and which this builder already knows.
+
+No server is needed because nothing is private. The publishable key is
+designed to ship in a browser, and anon holds SELECT on three tables of public
+YouTube data collected from a public API. A server would add a deployment
+surface and protect nothing.
+
+Accepted cost: a short empty state on first load, and no SEO. Both are
+irrelevant for a portfolio piece whose link is sent directly. The view returns
+a full read in 357 ms; twenty rows behind a WHERE and a LIMIT are far quicker,
+and a skeleton grid covers it.
+
+**2026-08-21 — Filter state lives in the URL, not in React state.**
+Four filters, 24 combinations, two routes, and a requirement that the state
+survives navigation in both directions.
+
+React state via Context was the obvious route and is what the builder's course
+taught. Rejected because the URL then never changes, and three things break
+with it: a refresh drops every filter back to its defaults, the back button
+either skips filter changes or behaves unpredictably, and no link can carry a
+state to someone else. The first of those is the worst — a prospective
+employer reloading the page and finding their filters gone reads as a bug.
+
+With the URL as the source of truth, the requirement stops being a feature.
+There is nothing to preserve across a route change, because the state *is* the
+address and the link behind "Show more" carries it. Refresh, the back button
+and shareable links all arrive as consequences rather than as three separate
+problems.
+
+Reinforcing reason: page number belongs in the URL regardless — page 2 of a
+category needs an address — so keeping the filters anywhere else would split
+one piece of state across two mechanisms.
+
+Cost is one new hook, `useSearchParams`, which reads almost exactly like
+`useState`.
+
+Defaults are exported once from `frontend/src/lib/filters.js` and resolved
+through a single helper, so a missing param and a changed default are both
+handled in one place. That constraint paid for itself within the hour: moving
+the `window` default from 7d to 90d was a one-word edit.
+
+**2026-08-21 — "Show more" navigates to a category page rather than expanding
+in place.**
+The category page repeats the ranking from #1, so the three videos already
+seen on the homepage appear again at the top. Considered starting the list at
+#4 to avoid showing them twice, and rejected: the homepage is gone by then, so
+nothing is on screen twice, and page 1 being literally "the top 20" keeps the
+page boundaries clean at 20, 40, 60 rather than 23, 43, 63.
+
+The filter bar is present and fully active on the category page, so a user can
+re-rank without going back. `page` must reset to 1 on any filter change — page
+3 of long-form may not exist under Shorts, and the result would be an empty
+grid that looks like missing data.
+
+**2026-08-21 — The URL path carries the raw category value, not a prettier
+slug.**
+`/category/triathletes`, not `/category/professional-triathletes`. A
+translation layer between URL and database is a second place to maintain and
+fails silently on a rename. The CHECK constraint on `channels.category`
+already makes those four values a closed set, so the URL uses that set
+directly.
+
+**2026-08-21 — Tailwind CSS over hand-written CSS.**
+Both reach the same result and the builder already knows CSS from the course —
+float, flexbox, grid, media queries. Chose Tailwind for two reasons specific
+to this project.
+
+The design already exists as `preview.png`, so the work is reproducing a
+reference rather than inventing one, and utility classes keep structure and
+styling in one file while doing that. And the layout repeats heavily — four
+identical category sections, one filter bar across two routes, a single dark
+scheme — so consistency of spacing and colour has to hold across many
+components. Tailwind's scales enforce that; hand-written CSS leaves it to
+discipline, and a tidy grid with consistent spacing is exactly what reads as
+"finished" on a portfolio piece.
+
+A component library (shadcn/ui, MUI) was rejected: the four things being built
+— filter bar, video card, category section, pagination — are specific enough
+that the library would be fought rather than used, and the result would look
+generic.
+
+Honest cost, recorded rather than glossed: time in Tailwind is time not spent
+sharpening hand-written CSS, which is the more durable skill. Accepted as a
+learning trade, not a technical one.
+
+**2026-08-21 — `window` defaults to 90d until the 7-day arm exists.**
+A bare URL under a 7d default opens on four empty categories, which reads as a
+broken site rather than as an empty window. Not a performance decision — an
+empty result is not slow, it is empty.
+
+Temporary and dated: revert to 7d once the 7-day arm of the scoring view is
+live, since the trending view is the more interesting default for a marketer
+and the 90-day list is deliberately the static all-time one. Recorded here
+because a temporary default with no expiry note is how it quietly becomes
+permanent.
+
+**2026-08-21 — Front-end scaffold and data layer verified against real
+behaviour before anything was styled.**
+Two steps, each checked in the browser rather than assumed from the code.
+
+The scaffold was tested with throwaway toggle buttons and the address bar in
+view: each toggle changed one param and left the rest, refresh held the state,
+the browser back button stepped back one filter change, and params survived
+the round trip to the homepage and back. That closed the "filters remembered
+across pages" requirement before a single row of data was on screen.
+
+The data layer was tested the same way, and the load-bearing check was the one
+expected to return nothing: switching `window` to 7d must yield zero rows. A
+7d query returning data would have meant the window filter was being ignored
+while everything still looked right. Toggling comparison had to reorder the
+list, proving the sort genuinely moves between `outlier_score` and `value`
+rather than coinciding.
+
+Method rather than finding, and consistent with the four collection-script
+bugs that only running the code exposed: the checks worth designing are the
+ones whose correct answer is an absence.
+
+**2026-08-21 — The Shorts/long-form baseline split verified in SQL, not taken
+on trust.**
+Confirmed that `is_short` appears in the baseline partition alongside
+`channel_id`, `window` and `metric`, so a Short is scored against the median
+of that channel's Shorts and a long-form video against long-form. Documented
+in three places already, but a missing partition key would have produced
+plausible numbers for every channel with no error and no visible symptom —
+the same failure shape as the fifteen-versus-sixteen off-by-one.
+
+Visible in the data as corroboration: `baseline_video_count` sits at 15 on
+most rows and drops to 7 with `is_provisional = true` on a channel thin in one
+format only, which a merged pool could not produce.
+
+
+**2026-08-21 — anon gets SELECT on the three tables the scoring view reads,
+not a definer view over sealed tables.**
+The 2026-08-16 two-layer design always ended here: a SELECT grant plus a
+SELECT policy for anon when the front end arrived. What was not anticipated is
+that `security_invoker = true` makes the view check the querying role's
+permissions on the underlying tables, so granting on the view alone returns
+empty results with no error.
+
+The alternative was to set scoring_view to security definer so it could read
+the tables on anon's behalf while they stayed sealed — genuinely narrower,
+since anon would then reach exactly the columns the view exposes and nothing
+else. Rejected for two reasons. It would mean disabling one of the two layers
+at the first moment they were tested, having spent yesterday fixing exactly
+that setting on `videos_readable`. And it would leave the two views needing
+opposite settings for opposite reasons, which is a subtle rule to carry into
+every future view.
+
+Worth recording that the distinction is real rather than a contradiction: a
+definer view is a hole when it is unintentional — a convenience object quietly
+bypassing security nobody considered — and a standard tool when it is
+deliberate, a controlled gateway designed as the only way in. `videos_readable`
+was the first; the rejected option was the second. Choosing against it is a
+judgement about which rule is easier to hold, not about which is safer in
+principle.
+
+Accepted consequence: anyone holding the publishable key, which ships in the
+browser, can query videos, channels and video_snapshots directly rather than
+only through the view. All of it is public YouTube data collected from a public
+API. `job_runs` stays sealed — the view never reads it, and it is the one table
+holding our own operational data.
+
+Verified from anon's own point of view rather than assumed: `set local role
+anon` then counting scoring_view returns 11,907 rows, and counting job_runs
+returns 42501 permission denied. The two failure modes are the ones the
+2026-08-16 decision named — a missing grant errors, an RLS block returns empty.
 
 **2026-08-21 — Baseline pools precomputed per group, not per row; the live
 view stands.**
@@ -809,12 +998,20 @@ Nothing in the prototype needs identity, and auth is pure scope cost.
   sides use lifetime totals, but not at the same age. This is the weakest joint
   in the model. Honest to explain, and the parked publication-date filter is the
   fix if it ever needs one.
-- **Front-end stack and hosting — not yet designed.** Deliberately deferred: the
-  collection job doesn't depend on them.
-- **YouTube API Terms of Service** — data retention and thumbnail display rules.
-  Worth closing before the front end is built rather than before launch: the
-  thumbnail rules could constrain how the results view works, and that is
-  cheaper to know now than to discover afterwards.
+- **Static hosting provider.** Stack is decided; the host is not. Vercel,
+  Netlify and Cloudflare Pages are all free at this scale and all deploy on
+  `git push`. One requirement decides nothing between them but must be
+  configured on whichever is chosen: every route has to rewrite to
+  `index.html`, or a direct link to `/category/teams` returns 404. Nothing
+  else depends on this, so it can wait until there is something worth
+  deploying.
+- **YouTube API Terms — data retention.** The thumbnail half of this question
+  is closed: thumbnails link to the video on YouTube in a new tab, which is
+  what the terms ask for. What remains is how long API-derived data may be
+  stored, which matters before a public URL and does not constrain the front
+  end. `video_snapshots` only grows, so if a retention limit binds it binds on
+  the oldest rows — worth knowing before the table has a year of history in
+  it.
 
 ## Rejected — and why
 
@@ -981,3 +1178,49 @@ correct 15-video pool for every video, including those never in the pool at all.
 Recorded because 15 is what the spec says and the off-by-one is invisible in the
 output — the median would simply have been computed from a slightly different
 set, with no error and no signal that anything was wrong.
+
+**Next.js for the front end.**
+Stronger on a CV, removes the empty state before data arrives, and gives SEO
+that this project has no use for. Rejected on where the cost lands: the App
+Router turns on the server/client component boundary, and this project's
+filter bar is interactive while its data fetch wants to be server-side — so
+the framework's hardest concept would be met on the headline feature, in week
+one, by someone whose React experience is a course project. Time spent
+learning a framework rather than building the product, for a difference the
+user never sees. Not rejected as a technology; rejected as a thing to learn
+right now. See the 2026-08-21 decision.
+
+**Vanilla HTML/CSS/JS for the front end.**
+Would mean hand-building routing and re-rendering on filter changes — exactly
+the work React removes, in a project whose builder already knows React.
+Listed for completeness during the stack decision rather than seriously
+considered.
+
+**React state via Context for the filters.**
+The route the builder's course teaches, and wrong here. The URL never changes,
+so a refresh drops every filter to its defaults, the back button skips filter
+changes, and no link can carry a state to someone else. The refresh case is
+the damaging one: an employer reloading the page and finding their filters
+gone reads as a bug. Also splits state across two mechanisms, since the page
+number belongs in the URL regardless.
+
+**A component library (shadcn/ui, MUI) for the front end.**
+Four components are being built — filter bar, video card, category section,
+pagination — and each is specific enough that the library would be overridden
+rather than used. The result looks generic and the time goes into learning the
+library's conventions instead of the design. Tailwind gives the consistency
+benefit without the component opinions.
+
+**Starting the category list at #4 to avoid repeating the homepage's top 3.**
+Considered because the three videos shown on the homepage appear again at the
+top of the category page. Rejected: "Show more" navigates away, so the
+homepage is no longer on screen and nothing is duplicated in front of the
+user. Starting at #4 would also push every page boundary off a round number —
+#4–23, #24–43 — for no gain.
+
+**A prettier slug in the category URL.**
+`/category/professional-triathletes` reads better than
+`/category/triathletes`, but it needs a mapping between URL and database value
+maintained in two places, which fails silently the moment a category is
+renamed. The CHECK constraint on `channels.category` already makes the four
+values a closed set.

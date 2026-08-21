@@ -48,28 +48,53 @@ A median of 1.04 is the baseline calibrating correctly.
 
 ---
 
-## After that: the front end
+## The front end
 
-Don't start before the scoring view returns sensible numbers — designing
-against a view that doesn't work yet means designing against guesses.
+Scaffold and data layer are done and verified in the browser. Two routes,
+filter state in the URL, a working query against `scoring_view`. Nothing is
+styled.
 
-1. [ ] Decide the front-end stack and hosting.
-2. [ ] Build the page from `preview.png`: filter bar with four controls (window,
-       metric, comparison, format), four category sections, top 3 each, "show
-       more" to expand.
-3. [ ] Open the two access layers narrowly for `anon` — a SELECT grant plus a
-       SELECT policy, on the scoring view only. Never on the tables, never write
-       access.
-4. [ ] Verify the Provisional label appears where it should.
+1. [ ] Install and configure Tailwind CSS v4. Dark base applied once at the
+       top level, matching `preview.png`. Config only — nothing restyled.
+2. [ ] Build the real filter bar, replacing the four throwaway toggle
+       buttons. Four groups, active state visible, present on both routes.
+       Every filter change must reset `page` to 1 — page 3 of long-form may
+       not exist under Shorts, and the empty grid would look like missing
+       data.
+3. [ ] Build the video card: thumbnail with duration badge, title, channel
+       name, avatar, views/likes/comments, and under Relative the Outlier
+       Score as a multiple (`75×`). Provisional badge where
+       `is_provisional`. Thumbnail links to YouTube in a new tab. Must
+       render without an avatar — `avatar_url` is null until 24 August.
+4. [ ] Build the homepage: four category sections in fixed order, top 3
+       each, "Show more" linking to the category page with the current
+       params attached.
+5. [ ] Build the category page grid: 20 per page, rank offset-aware, 16:9
+       for long-form and 9:16 for Shorts. Pagination needs both directions
+       and a stop at the last page — the throwaway button only goes forward.
+6. [ ] Responsive. Check the four category sections collapse sensibly on a
+       phone.
+7. [ ] Verify the Provisional label appears where it should. Matt Hauser has
+       no Shorts, so his Shorts rows should come back with a null score and
+       `is_provisional = true`.
+8. [ ] Revert the `window` default from `90d` to `7d` once the 7-day arm is
+       live. One line in `frontend/src/lib/filters.js`.
+9. [ ] Choose a static host and deploy. Whichever it is, configure route
+       rewriting to `index.html` or a direct link to `/category/teams`
+       returns 404.
 
 ---
 
 ## Small things, whenever
 
-- [ ] Add `.env.example` — four variable names now, no values, committed. Note
-      that `HEALTHCHECKS_URL` is deliberately absent from the local `.env`: a
-      manual test run must not be able to silence an alarm about the scheduled
-      job failing to run.
+- [ ] Add a root `.env.example` for the collection job — four variable names,
+      no values, committed. Note that `HEALTHCHECKS_URL` is deliberately
+      absent from the local `.env`: a manual test run must not be able to
+      silence an alarm about the scheduled job failing to run. The front end
+      already has its own at `frontend/.env.example`, with
+      `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`. The two stay
+      separate — the secret key must never sit in the same file as anything
+      the browser reads.
 - [ ] Write a README.
 - [ ] Review YouTube's API Services Terms on data retention and thumbnail
       display, before anything goes to a public URL.

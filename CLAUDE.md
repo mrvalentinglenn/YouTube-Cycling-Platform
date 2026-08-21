@@ -479,6 +479,104 @@ All four categories are always visible on one page — the cross-category view i
 the point. A marketer wants to see what teams are doing next to what brands are
 doing, without navigating.
 
+## Front-end architecture
+
+**Stack.** Vite + React + React Router, deployed as a static site. No server:
+the browser reads `scoring_view` directly with the Supabase publishable key.
+Nothing here is private — the anon role holds SELECT on public YouTube data
+and nothing else — so a server would add a deployment surface without adding
+protection. The secret key never enters `frontend/`.
+
+Lives in `frontend/` inside this repo rather than a repo of its own, so one
+link shows a prospective employer the collection job, the schema, the
+decision log and the product together.
+
+**Two routes.**
+
+| Route | What it is |
+|---|---|
+| `/` | Homepage — four category sections, top 3 each |
+| `/category/:category` | One category, ranked, 20 per page |
+
+`:category` carries the raw database value — `brands`, `triathletes`, `teams`,
+`influencers` — not a prettier slug. The CHECK constraint on
+`channels.category` already makes those four a closed set; a translation layer
+between URL and database would be a second place to maintain and would break
+silently on a rename.
+
+**"Show more" is navigation, not expansion.** It leaves the homepage and opens
+the category page. That page shows the same ranking continued, numbered from
+#1 — so the three videos from the homepage appear again at the top. They are
+not duplicated on screen, because the homepage is no longer there.
+
+**Filter state lives in the URL as query params.**
+
+| Param | Values | Default |
+|---|---|---|
+| `window` | `7d` \| `90d` | `90d` — see below |
+| `metric` | `views` \| `likes` \| `comments` | `views` |
+| `comparison` | `absolute` \| `relative` | `absolute` |
+| `format` | `longform` \| `shorts` | `longform` |
+| `page` | integer | `1` |
+
+Missing params fall back to their default, so a bare URL always resolves to a
+valid state and no half-set combination has to be handled.
+
+The URL is the single source of truth rather than React state. Three things
+then come free instead of being built: refresh keeps the current filters, the
+browser back button steps back one filter change, and a link can be shared
+with its filters intact. Carrying state across the two routes stops being a
+feature at all — the link behind "Show more" simply passes the params along.
+
+Defaults live in exactly one place, `frontend/src/lib/filters.js`, exported as
+`DEFAULT_FILTERS` alongside a resolver that takes a `URLSearchParams` and
+returns every filter resolved to its URL value or its default. Both pages use
+that resolver; the defaults appear nowhere else.
+
+**The filter bar appears on both routes** and is fully active on both. Changing
+a filter on the category page re-ranks that page in place — no returning to
+the homepage to filter. Every filter change must reset `page` to 1: page 3 of
+long-form may not exist under Shorts.
+
+**Reading the view.** `format` is not a column — it maps to `is_short`
+(`longform` → false, `shorts` → true). The view is tall, so each video appears
+once per window per metric, with `views`, `likes` and `comments` all populated
+on every row and `value` holding whichever metric that row is for. One row
+therefore carries everything a card needs.
+
+Ordering is by `outlier_score` under relative and by `value` under absolute,
+descending, and always with `nullsFirst: false` — see the front-end contract.
+Pagination is `.range()`, 20 rows per page.
+
+**Rank is positional and offset-aware.** The view carries no rank column. The
+front end derives it from row order plus the page offset: the first row of
+page 2 is #21.
+
+**The category page grid follows YouTube's own layout** — thumbnail with a
+duration badge, title, channel name and avatar beneath. It departs from
+YouTube on one point deliberately: views, likes and comments are shown on
+every card including Shorts, where YouTube shows views alone. Shorts and
+long-form never mix in one list, since the format filter is a toggle, so each
+grid has a single aspect ratio: 16:9 for long-form, 9:16 for Shorts.
+
+**Thumbnails link to the video on YouTube, opening in a new tab.** This also
+settles the thumbnail question in YouTube's API Terms, which require a
+thumbnail to link back to the video rather than stand alone. The data
+retention rules remain to be reviewed before a public URL, but they do not
+constrain the front end.
+
+**`avatar_url` is null on every row until the first Monday sweep** — avatars
+are refreshed only on the 90-day run, and the first real Monday is 24 August.
+Cards must render without an avatar rather than treating it as required. This
+is permanent behaviour, not a temporary gap: a newly added channel has no
+avatar until the following Monday either.
+
+**`window` defaults to `90d` rather than `7d` while the 7-day arm of the
+scoring view does not exist.** A bare URL would otherwise open on four empty
+categories, which reads as a broken site rather than as an empty window.
+Revert to `7d` once the 7-day arm is live — it is the trending view and the
+more interesting default for a marketer. One line in `DEFAULT_FILTERS`.
+
 ## Explicitly out of scope
 
 Transcript summaries; the "why did it work" auto-tagging layer; cross-category
@@ -537,7 +635,10 @@ key, which bypasses Row Level Security and must only ever run on a machine we
 control. The front end, when it exists, uses the **publishable** key. The secret
 key never appears in front-end code.
 
-Front-end stack and hosting are deliberately undecided — the collection job doesn't depend on them.
+- **Front end:** Vite + React + React Router, static hosting. See
+  Front-end architecture below. Hosting provider not yet chosen — any static
+  host works, with one requirement: all routes must rewrite to `index.html`,
+  or a direct link to `/category/teams` returns 404.
 
 ## Collection job requirements
 
