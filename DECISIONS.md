@@ -13,34 +13,174 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 *Last updated: 2026-08-21*
 
-**Collection is unattended.** Daily runs fire on their own and land at 132–134
-snapshots, which is the 8-day window overlapping seven-eighths of its videos
-between runs. The `weekly` path still hasn't fired on a real Monday; 24 August
-is the first, and it should record `mode = 'weekly'` with ~400 rows.
+**Collection is unattended.** Daily runs fire on their own at 132–134
+snapshots. The `weekly` path still hasn't fired on a real Monday; 24 August is
+the first, and it should record `mode = 'weekly'` with ~400 rows.
 
-**The scoring view is built, 90-day arm only.** `sql/scoring_view.sql`, tall
-shape, `security_invoker = true`, 357 ms for a full read. Score distribution on
-long-form views: p25 0.56, p50 1.04, p75 1.92, p95 7.21. `anon` holds SELECT on
-`channels`, `videos` and `video_snapshots`; `job_runs` stays sealed.
+**The scoring view is built, 90-day arm only.** Tall shape,
+`security_invoker = true`, 357 ms for a full read, mirrored into
+`sql/schema.sql`. `anon` holds SELECT on `channels`, `videos` and
+`video_snapshots`; `job_runs` stays sealed.
 
-**The front end reads real data.** `frontend/` holds a Vite + React + React
-Router scaffold with two routes, filter state in the URL, and a working
-Supabase query against `scoring_view`. Verified in the browser: filters survive
-refresh and navigation in both directions, the back button steps one filter
-change, sorting moves between `outlier_score` and `value`, pagination offsets
-the rank correctly, and a 7d query returns zero rows as it should. Nothing is
-styled yet — Tailwind is the next step.
+**The category page is functional and styled.** Vite + React + React Router in
+`frontend/`, Tailwind v4, filter state in the URL. Working: the four-filter bar
+on both routes, a responsive card grid at format-dependent page sizes, the
+Outlier Score badge, the Provisional badge, pagination with a computed last
+page, and YouTube links in a new tab. Verified in the browser rather than
+assumed — filters survive refresh and navigation, sorting moves between
+`outlier_score` and `value`, rank offsets correctly, and a 7d query returns
+zero rows as it should.
+
+The channel exclusion filter is in progress: the plumbing runs through the
+resolver and the query, and the homepage will pick it up when its sections
+exist.
 
 Data on hand: ~3,970 videos across 40 channels.
 
 Not built: the 7-day arm of the scoring view, which needs day-7 readings that
-first exist around 26–27 August; and everything visual in the front end.
+first exist around 26–27 August; the homepage category sections; hosting.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
 ---
 
 ## Decisions
+
+**2026-08-21 — The Shorts grid bug was one fixed width, not three layout
+faults.**
+Three symptoms: no gap between cards, the duration badge clipped mid-text,
+and the Provisional badge cut off by the neighbouring card. They looked like
+separate spacing and overflow problems and were one cause.
+
+`VideoCard` carried a hardcoded `w-56` (224px) on its outer element,
+untethered to the grid track it actually occupies. That happened to
+approximate long-form's track width at 4 and 5 columns, so long-form looked
+correct. Shorts runs 3/4/6/6 columns, where a track is ~147px at six across
+and ~104px on mobile — so the card rendered at 224px regardless and spilled
+past its own cell. A block element with an explicit width does not shrink
+into a narrower grid cell.
+
+That single overflow produced all three symptoms. It consumed the gap
+visually, so `gap-4` appeared broken while being entirely correct. And later
+grid items paint over earlier ones, so the next column's card covered whatever
+sat near the overflowing card's right edge — the duration badge at the bottom,
+the Provisional badge at the top. "Clipped" and "cut off by the neighbour"
+were the same overlap at two corners.
+
+Fix was `w-56` → `w-full`, letting the card take the width its cell gives it
+and deriving height from the existing aspect-ratio classes. Nothing else
+changed; the spacing resolved on its own once the card stopped fighting its
+own grid cell.
+
+Worth keeping as method: three symptoms in one component are usually one
+cause, and the instinct to fix each where it appears — add gap, shrink the
+badge, clip the image — would have papered over a card that was still the
+wrong width, and left the bug waiting for the next breakpoint or column
+count.
+
+**2026-08-21 — Channel exclusion filter added, reversing the park earlier the
+same day.**
+Parked hours earlier with the argument that the product already solves this:
+the Relative toggle exists precisely so large channels don't dominate, so
+seeing GCN and Red Bull Bike at the top under Absolute was the system working
+as designed.
+
+That argument was wrong, and the counter-example killed it. Red Bull Bike
+tops the Shorts list under Relative too — and correctly, because those videos
+genuinely outperform that channel's own normal. The score is right. The
+problem is that Red Bull Bike's content is BMX and downhill, a specific niche
+most cycling brands don't operate in, and Malachi Cashmore's is absurdist
+humour that many brands would not want to be compared against. Neither is a
+scoring failure. Both are a relevance failure, and no measurement filter can
+express relevance.
+
+This is the distinction worth carrying: window, metric, comparison and format
+all answer *how do we measure*. Exclusion answers *what matters to me*. Those
+are different questions, which is why the control sits on its own row rather
+than becoming a fifth measurement group.
+
+It is also a better interview answer than the park would have been. "The score
+says this BMX video did extremely well. For a road brand that is still noise,
+so the user can switch the channel off" is marketing thinking, which is one of
+the three things this project exists to demonstrate.
+
+Recorded with the reversal intact rather than rewritten, because the reasoning
+turning around mid-session is the useful part. The original park was a
+defensible call on the evidence available; a single concrete example from
+someone who knows the sector overturned it. Same pattern as the duration
+heuristic: the domain observation beat the argument from design.
+
+Cost was low and stays low: one WHERE clause, one URL param, no change to the
+scoring view or the schema. Excluding a channel changes no other video's
+score, because baselines are per channel — that independence is a consequence
+of scoring relative to a channel's own median, not a coincidence.
+
+**2026-08-21 — Exclusions in the URL, not inclusions; all channels on by
+default.**
+The param carries only the channels switched off. A bare URL therefore stays
+short, since a user typically removes a handful rather than selecting a few,
+and an absent param unambiguously means "everything".
+
+Excluded channels are shown as removable chips beside the control rather than
+being folded into a count. Without them a filtered list is indistinguishable
+from a short list, and a user who forgets they are filtering reads missing
+data as a bug. The chips make the state visible where the consequence appears.
+
+**2026-08-21 — Page size is 24 for Shorts and 20 for long-form.**
+Shorts are portrait, so more fit per row at the same width. 24 divides
+cleanly into every breakpoint's column count — 6, 6, 4, 3 — while 20 leaves a
+ragged last row on most of them.
+
+The consequence is that a page number means something different per format:
+page 2 is #21–40 on long-form and #25–48 on Shorts. Two things follow. The
+page size must live in one helper used by both `.range()` and the rank
+offset — if those diverge, videos are silently skipped or repeated between
+pages and the list looks entirely plausible. And the existing page-reset rule
+gets harder: page 5 of Shorts can reach further than page 5 of long-form
+exists, so a filter change that kept the page number could land on nothing.
+That rule was already built into the filter bar, which is why this is not a
+bug.
+
+**2026-08-21 — The Outlier Score is a badge on the thumbnail, not a fourth
+statistic.**
+Top-left of the thumbnail, shown only under Relative, formatted `15.9×`.
+Considered placing it in the row of views/likes/comments beneath the title,
+which is marginally simpler to build. Rejected on three grounds.
+
+It is the product's differentiator, and sitting fourth in a row of counts
+makes it read as another count rather than as a judgement about the video. It
+is the only value that appears and disappears with a filter, so a row of four
+numbers would jump on every comparison toggle while a badge has its own layer.
+And it demos better: `15.9×` on a thumbnail is legible at a glance to someone
+watching over your shoulder; the same number in a statistics row needs
+explaining.
+
+A null score shows no badge at all. Displaying `0.0×` was suggested and
+rejected: null means no valid baseline exists, which is not a score of zero,
+and `0.0×` on a video with 40,000 views reads as a broken product. The
+Provisional badge on the opposite corner covers the case, so the card still
+communicates something — the same reasoning that makes `nullsFirst: false`
+a hard requirement.
+
+`preview.png` does not show the score because it was drawn under Absolute,
+where the question does not arise.
+
+**2026-08-21 — Tailwind v4, installed via the Vite plugin rather than the v3
+PostCSS route.**
+v4 uses a Vite plugin and a CSS-first config — one `@import "tailwindcss"` —
+with no `tailwind.config.js` and no `postcss.config.js`. Most material online
+still describes v3, so the installation route had to be specified rather than
+left to a search.
+
+Verified rather than assumed: a production build was run and the emitted CSS
+checked for the specific utility classes in use, not merely for the absence of
+an error. An install that silently compiles nothing produces a page that looks
+exactly like an unstyled one.
+
+Base colours left at Tailwind's stock `neutral-950` / `neutral-100` rather
+than hand-matched to preview.png's faintly violet near-black. Judging a
+background on an empty page is guessing; it reads correctly now there is
+content on it, and it is one class to change later.
 
 **2026-08-21 — Front end is a static SPA: Vite + React + React Router, no
 server.**
@@ -1224,3 +1364,26 @@ user. Starting at #4 would also push every page boundary off a round number —
 maintained in two places, which fails silently the moment a category is
 renamed. The CHECK constraint on `channels.category` already makes the four
 values a closed set.
+
+**Placing the channel filter as a fifth group in the filter bar row.**
+More compact, and keeps the bar on one line. Rejected because the control
+would then have to carry its whole state in its own label — "38 of 40" — so
+the user could never see *which* channels are off without opening the menu.
+It would also imply the filter is another measurement control, which it is
+not. Its own row beneath a dividing rule, with removable chips, says what
+it actually is.
+
+**Showing `0.0×` when `outlier_score` is null.**
+Suggested so the badge never silently disappears. Rejected: null means no
+valid baseline exists, which is a different statement from a score of zero,
+and `0.0×` on a video with 40,000 views reads as a defect in the product
+rather than as an absence of data. The Provisional badge on the opposite
+corner already communicates the case.
+
+**Building the homepage category sections inside the channel-filter task.**
+The filter's spec said the homepage must respect exclusions, but the homepage
+renders no video data yet — it is four links. Claude Code flagged the
+contradiction rather than guessing, and the plumbing-only route was taken:
+`exclude` flows through the resolver and the query, and the sections will pick
+it up for free when they are built. Building both at once would have meant not
+knowing which half a failure came from.

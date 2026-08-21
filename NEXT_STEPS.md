@@ -50,36 +50,29 @@ A median of 1.04 is the baseline calibrating correctly.
 
 ## The front end
 
-Scaffold and data layer are done and verified in the browser. Two routes,
-filter state in the URL, a working query against `scoring_view`. Nothing is
-styled.
+Scaffold, data layer, filter bar, video card and category grid are built and
+verified in the browser. Tailwind v4 is installed. What remains:
 
-1. [ ] Install and configure Tailwind CSS v4. Dark base applied once at the
-       top level, matching `preview.png`. Config only — nothing restyled.
-2. [ ] Build the real filter bar, replacing the four throwaway toggle
-       buttons. Four groups, active state visible, present on both routes.
-       Every filter change must reset `page` to 1 — page 3 of long-form may
-       not exist under Shorts, and the empty grid would look like missing
-       data.
-3. [ ] Build the video card: thumbnail with duration badge, title, channel
-       name, avatar, views/likes/comments, and under Relative the Outlier
-       Score as a multiple (`75×`). Provisional badge where
-       `is_provisional`. Thumbnail links to YouTube in a new tab. Must
-       render without an avatar — `avatar_url` is null until 24 August.
-4. [ ] Build the homepage: four category sections in fixed order, top 3
-       each, "Show more" linking to the category page with the current
-       params attached.
-5. [ ] Build the category page grid: 20 per page, rank offset-aware, 16:9
-       for long-form and 9:16 for Shorts. Pagination needs both directions
-       and a stop at the last page — the throwaway button only goes forward.
-6. [ ] Responsive. Check the four category sections collapse sensibly on a
-       phone.
-7. [ ] Verify the Provisional label appears where it should. Matt Hauser has
+1. [ ] Finish the channel exclusion filter — dropdown grouped by category with
+       a name search, removable chips, "38 of 40 shown", Reset. Plumbing is
+       in; the homepage half waits on step 3.
+2. [ ] Build the homepage: four category sections in fixed order, top 3 each,
+       "Show more" linking to the category page with the current params
+       attached. Uses the same `getCategoryVideos`, so exclusions apply for
+       free.
+3. [ ] Add the filter bar icons from `preview.png` — deliberately left out
+       while the cards did not exist to judge them against.
+4. [ ] Responsive pass across the whole page on a phone, not just the grid.
+5. [ ] Verify the Provisional label appears where it should. Matt Hauser has
        no Shorts, so his Shorts rows should come back with a null score and
-       `is_provisional = true`.
-8. [ ] Revert the `window` default from `90d` to `7d` once the 7-day arm is
+       `is_provisional = true`. Easiest route: filter `scoring_view` on
+       `is_provisional = true` in the Supabase table editor, then find those
+       videos in the front end.
+6. [ ] Revert the `window` default from `90d` to `7d` once the 7-day arm is
        live. One line in `frontend/src/lib/filters.js`.
-9. [ ] Choose a static host and deploy. Whichever it is, configure route
+7. [ ] Replace Vite's default `frontend/README.md` with something
+       project-specific.
+8. [ ] Choose a static host and deploy. Whichever it is, configure route
        rewriting to `index.html` or a direct link to `/category/teams`
        returns 404.
 

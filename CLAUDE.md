@@ -518,6 +518,7 @@ not duplicated on screen, because the homepage is no longer there.
 | `comparison` | `absolute` \| `relative` | `absolute` |
 | `format` | `longform` \| `shorts` | `longform` |
 | `page` | integer | `1` |
+| `exclude` | comma-separated `channel_id` list | empty — all channels shown |
 
 Missing params fall back to their default, so a bare URL always resolves to a
 valid state and no half-set combination has to be handled.
@@ -552,12 +553,62 @@ Pagination is `.range()`, 20 rows per page.
 front end derives it from row order plus the page offset: the first row of
 page 2 is #21.
 
+**Page size depends on format.** Long-form is 20 per page, Shorts 24. Shorts
+are portrait, so more fit per row, and 24 divides cleanly into every
+breakpoint's column count while 20 does not.
+
+| | Mobile | Tablet | Small laptop | Wide | Per page |
+|---|---|---|---|---|---|
+| Long-form | 1 | 2 | 4 | 5 | 20 |
+| Shorts | 3 | 4 | 6 | 6 | 24 |
+
+Page size lives in one exported helper in `frontend/src/lib/filters.js`,
+used by both `queries.js` for `.range()` and the page for the rank offset.
+If those two numbers ever diverge, videos are silently skipped or repeated
+between pages — a plausible-looking list with no error. This is also why
+`page` must reset to 1 on every filter change: page 5 of Shorts can reach
+further than page 5 of long-form exists.
+
 **The category page grid follows YouTube's own layout** — thumbnail with a
-duration badge, title, channel name and avatar beneath. It departs from
-YouTube on one point deliberately: views, likes and comments are shown on
-every card including Shorts, where YouTube shows views alone. Shorts and
-long-form never mix in one list, since the format filter is a toggle, so each
-grid has a single aspect ratio: 16:9 for long-form, 9:16 for Shorts.
+duration badge bottom-right, title, channel name and avatar beneath. It
+departs from YouTube on one point deliberately: views, likes and comments
+are shown on every card including Shorts, where YouTube shows views alone.
+Shorts and long-form never mix in one list, since the format filter is a
+toggle, so each grid has a single aspect ratio: 16:9 for long-form, 9:16
+for Shorts.
+
+**The Outlier Score is a badge on the top-left of the thumbnail**, shown only
+under Relative, formatted as a multiple with one decimal and an explicit `×`.
+It sits on the thumbnail rather than among views/likes/comments so it reads
+as a judgement about the video rather than a fourth statistic — it is the
+product's differentiator, and it is the only value that appears and
+disappears with a filter, which would make a row of four numbers jump.
+
+A null `outlier_score` shows no badge. Null means no valid baseline exists,
+which is not the same as a score of zero: `0.0×` on a video with 40,000
+views reads as a broken product. The Provisional badge covers that case, so
+the card still says something — on the other corner.
+
+**The Provisional badge sits top-right and is deliberately subtle** — muted
+and low contrast. It is a caveat, not a warning, and must not compete with
+the score badge opposite it.
+
+**The channel filter answers a different question from the other four.**
+Window, metric, comparison and format all describe *how* performance is
+measured. `exclude` describes *what is relevant to the person looking*. A
+brand may find Red Bull Bike's BMX and downhill content genuinely
+high-performing and still irrelevant: the score is right, the fit is wrong.
+No measurement filter can express that.
+
+It therefore sits on its own row beneath the four, divided by a rule, rather
+than as a fifth group. Excluded channels appear as removable chips beside
+the control, so a filtered list never looks like a short list — without
+them, a user forgets they are filtering and wonders what is missing.
+
+All channels are on by default and the URL carries only the exclusions, so a
+bare URL stays short. Excluding a channel filters which videos are listed
+and changes no other video's score, because baselines are computed per
+channel.
 
 **Thumbnails link to the video on YouTube, opening in a new tab.** This also
 settles the thumbnail question in YouTube's API Terms, which require a
