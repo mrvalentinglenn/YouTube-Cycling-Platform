@@ -14,19 +14,23 @@ only on full success. The backfill has run: 3,946 videos across 40 channels.
 
 Collection is live. Nothing further is required to keep it running.
 
-**One thing to check on, without doing anything:**
+**Two things to check on tomorrow, 24 August — the first run to exercise both:**
 
-- [ ] Monday's run should record `mode = 'weekly'` and write ~400 rows rather
-      than ~134. That is the date-derived window working; it has never been
-      exercised on a real Monday. Next Monday is 24 August.
+- [ ] `mode = 'weekly'` and ~400 rows rather than ~134. That is the
+      date-derived window working; it has never fired on a real Monday.
+- [ ] The refresh call landed. `refresh_scoring_view()` is new and has never
+      run inside a scheduled job. A failure marks the run failed and
+      suppresses the Healthchecks ping, so silence is the signal — but check
+      `job_runs` for the run's status either way.
 
 ---
 
-## The scoring view — 90-day arm done
+## The scoring view — 90-day arm done, materialised
 
-`sql/scoring_view.sql` is built and running. Tall shape: one row per video,
-per window, per metric. `security_invoker = true`, nothing granted to `anon`
-yet, no ORDER BY on the view.
+`sql/scoring_view.sql` holds two objects: `scoring_view_live` (the query, tall
+shape, `security_invoker = true`, no ORDER BY) and `scoring_view` (the
+materialised copy the front end reads, with three indexes). Refreshed by
+`collect.py` after its failure checks pass.
 
 Verified: 357 ms for a full `SELECT *` after the baseline was rewritten to
 precompute pools (the first version timed out). Score distribution on
@@ -53,28 +57,34 @@ A median of 1.04 is the baseline calibrating correctly.
 Scaffold, data layer, filter bar, video card and category grid are built and
 verified in the browser. Tailwind v4 is installed. What remains:
 
-1. [ ] Finish the channel exclusion filter — dropdown grouped by category with
-       a name search, removable chips, "38 of 40 shown", Reset. Plumbing is
-       in; the homepage half waits on step 3.
-2. [ ] Build the homepage: four category sections in fixed order, top 3 each,
+1. [ ] Build the homepage: four category sections in fixed order, top 3 each,
        "Show more" linking to the category page with the current params
        attached. Uses the same `getCategoryVideos`, so exclusions apply for
        free.
-3. [ ] Add the filter bar icons from `preview.png` — deliberately left out
+2. [ ] Add the filter bar icons from `preview.png` — deliberately left out
        while the cards did not exist to judge them against.
-4. [ ] Responsive pass across the whole page on a phone, not just the grid.
-5. [ ] Verify the Provisional label appears where it should. Matt Hauser has
+3. [ ] Responsive pass across the whole page on a phone, not just the grid.
+4. [ ] Verify the Provisional label appears where it should. Matt Hauser has
        no Shorts, so his Shorts rows should come back with a null score and
        `is_provisional = true`. Easiest route: filter `scoring_view` on
        `is_provisional = true` in the Supabase table editor, then find those
        videos in the front end.
-6. [ ] Revert the `window` default from `90d` to `7d` once the 7-day arm is
+5. [ ] Revert the `window` default from `90d` to `7d` once the 7-day arm is
        live. One line in `frontend/src/lib/filters.js`.
-7. [ ] Replace Vite's default `frontend/README.md` with something
+6. [ ] Replace Vite's default `frontend/README.md` with something
        project-specific.
-8. [ ] Choose a static host and deploy. Whichever it is, configure route
+7. [ ] Choose a static host and deploy. Whichever it is, configure route
        rewriting to `index.html` or a direct link to `/category/teams`
        returns 404.
+8. [ ] Measure whether `count: 'exact'` is now fast enough on four categories
+        to keep "Page X of Y". It was never re-measured after materialising —
+        we went straight past the question. If it is slow, the fallback is a
+        `pageSize + 1` has-more check and a "Page 3" / Next-disabled UI. See
+        DECISIONS Rejected.
+9. [ ] Drop `scoring_view_live`'s dead weight if the 7-day arm changes its
+        shape — no action now, just a reminder that the arm gets added inside
+        `scoring_view_live`, not inside the materialised view, and the next
+        refresh picks it up.       
 
 ---
 

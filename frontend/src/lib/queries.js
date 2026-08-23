@@ -30,8 +30,11 @@ const SELECT_COLUMNS = [
 // The one query the front end makes so far. `format` is not a column on
 // scoring_view — it maps to is_short (longform = false, shorts = true) —
 // so the mapping happens here rather than being pushed onto callers.
+// `categories` is an array — the category page shows one merged ranking
+// across every selected category, not one section per category, so this is
+// .in(), not .eq().
 export async function getCategoryVideos({
-  category,
+  categories,
   window,
   metric,
   comparison,
@@ -56,11 +59,17 @@ export async function getCategoryVideos({
   // { count: 'exact' } asks PostgREST for the total number of matching
   // rows (ignoring .range()) alongside the page of data itself, via the
   // response's Content-Range header — that's what lets the caller know
-  // when it has reached the last page.
+  // when it has reached the last page. This is one query object, built up
+  // and executed once below: the count comes from the exact same filtered
+  // request as the rows, so .in('category', ...) only needs to be applied
+  // here once for both to stay in agreement. A separate count query would
+  // risk drifting from the row filters with no error to show for it — the
+  // same failure shape as page size disagreeing between .range() and the
+  // rank offset.
   let queryBuilder = supabase
     .from('scoring_view')
     .select(SELECT_COLUMNS, { count: 'exact' })
-    .eq('category', category)
+    .in('category', categories)
     .eq('window', window)
     .eq('metric', metric)
     .eq('is_short', isShort)

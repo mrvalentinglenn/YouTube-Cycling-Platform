@@ -29,7 +29,7 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<HomePage channels={channels} />} />
-      <Route path="/category/:category" element={<CategoryPage channels={channels} />} />
+      <Route path="/category/:categories" element={<CategoryPage channels={channels} />} />
     </Routes>
   )
 }

@@ -779,7 +779,24 @@ def main():
             status = "failed"
             error_message = "; ".join(check_failures)
         else:
-            status = "success"
+            # Only a run that passed all three checks may publish its data
+            # to the page. refresh_scoring_view() is a Postgres function —
+            # supabase-py cannot execute arbitrary SQL — that REFRESHes the
+            # materialised scoring_view from the live view underneath it.
+            # Run in every mode, backfill included: this branch is shared
+            # by all of them, with no mode-based special-casing.
+            try:
+                supabase.rpc("refresh_scoring_view", {}).execute()
+            except Exception as e:
+                # A broken refresh must be exactly as loud as a broken
+                # collection run: the page would otherwise go on serving
+                # whatever the last successful refresh produced, with
+                # nothing here to say it had stopped updating.
+                status = "failed"
+                error_message = f"refresh_scoring_view failed — {e}"
+                print(f"Run failed — {error_message}")
+            else:
+                status = "success"
     except Exception as e:
         # Anything that escaped the per-channel try/except above — the
         # channels-table read failing, an empty channel list, or a genuine

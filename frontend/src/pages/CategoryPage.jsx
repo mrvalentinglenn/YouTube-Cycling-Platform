@@ -1,15 +1,23 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import FilterBar from '../components/FilterBar'
 import VideoCard from '../components/VideoCard'
-import { getPageSize, resolveFilters } from '../lib/filters'
+import { CATEGORIES, getPageSize, parseCategories, resolveFilters, serializeCategories } from '../lib/filters'
 import { getCategoryVideos } from '../lib/queries'
 
 export default function CategoryPage({ channels }) {
-  const { category } = useParams()
+  const { categories: rawCategories } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const filters = resolveFilters(searchParams)
   const query = searchParams.toString()
+
+  // Defensive parsing: unknown tokens (a typo, a stale link, a hand-edited
+  // URL) are dropped rather than erroring. An empty result after that is
+  // handled below, once all hooks have run — it can't short-circuit here,
+  // because hooks must be called in the same order on every render.
+  const selectedCategories = parseCategories(rawCategories)
+  const categoriesKey = selectedCategories.join(',')
 
   const [rows, setRows] = useState([])
   const [totalCount, setTotalCount] = useState(0)
@@ -21,17 +29,21 @@ export default function CategoryPage({ channels }) {
   // giving the effect below a primitive it can actually depend on.
   const excludeKey = filters.exclude.join(',')
 
-  // Re-runs whenever category or any individual filter value changes —
-  // deliberately not keyed on the `filters` object itself, since
+  // Re-runs whenever the category selection or any individual filter value
+  // changes — deliberately not keyed on the `filters` object itself, since
   // resolveFilters() returns a new object on every render regardless of
   // whether anything actually changed.
   useEffect(() => {
+    // Nothing to fetch while the page below is about to redirect away from
+    // an invalid/empty category selection.
+    if (selectedCategories.length === 0) return undefined
+
     let cancelled = false
     setLoading(true)
     setError(null)
 
     getCategoryVideos({
-      category,
+      categories: selectedCategories,
       window: filters.window,
       metric: filters.metric,
       comparison: filters.comparison,
@@ -50,7 +62,7 @@ export default function CategoryPage({ channels }) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [category, filters.window, filters.metric, filters.comparison, filters.format, filters.page, excludeKey])
+  }, [categoriesKey, filters.window, filters.metric, filters.comparison, filters.format, filters.page, excludeKey])
 
   // getPageSize() is the same helper queries.js used for .range() — using
   // anything else here is exactly the divergence that would silently skip
@@ -58,9 +70,19 @@ export default function CategoryPage({ channels }) {
   const pageSize = getPageSize(filters.format)
   const pageNumber = Number(filters.page) || 1
   // The page's first row is rank (page - 1) * pageSize + 1, so page 2 of
-  // long-form starts at #21, page 2 of Shorts (pageSize 24) at #25.
+  // long-form starts at #21, page 2 of Shorts (pageSize 24) at #25 — same
+  // rule as before, now applied to a ranking merged across categories
+  // rather than a single one.
   const rankOffset = (pageNumber - 1) * pageSize
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize))
+
+  // Bad/empty category selection: redirect rather than render an empty
+  // page. `replace` is load-bearing — without it the bad URL stays in
+  // browser history, so back lands on it and immediately redirects forward
+  // again, trapping the user.
+  if (selectedCategories.length === 0) {
+    return <Navigate to={`/category/${CATEGORIES[0].value}${query ? `?${query}` : ''}`} replace />
+  }
 
   function goToPage(newPage) {
     const next = new URLSearchParams(searchParams)
@@ -69,6 +91,25 @@ export default function CategoryPage({ channels }) {
     // A page change should land the user at the top of the new page, not
     // wherever they happened to be scrolled to on the old one.
     window.scrollTo(0, 0)
+  }
+
+  function toggleCategory(categoryValue) {
+    const isSelected = selectedCategories.includes(categoryValue)
+
+    // The page can never reach zero categories — removing the last one is
+    // a no-op, not a fall-through to "show everything".
+    if (isSelected && selectedCategories.length === 1) return
+
+    const nextCategories = isSelected
+      ? selectedCategories.filter((value) => value !== categoryValue)
+      : [...selectedCategories, categoryValue]
+
+    const nextSearchParams = new URLSearchParams(searchParams)
+    // Same rule as the other filters: a category change can put the
+    // current page number past the end of the new selection's results.
+    nextSearchParams.set('page', '1')
+
+    navigate(`/category/${serializeCategories(nextCategories)}?${nextSearchParams.toString()}`)
   }
 
   // Shorts run 9:16, so more of them fit per row than 16:9 long-form —
@@ -81,11 +122,46 @@ export default function CategoryPage({ channels }) {
       ? 'grid-cols-3 md:grid-cols-4 lg:grid-cols-6'
       : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5'
 
+  const heading = selectedCategories
+    .map((value) => CATEGORIES.find((category) => category.value === value).label)
+    .join(' + ')
+
   return (
     <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
       <FilterBar channels={channels} />
-      <h1>{category}</h1>
-      <Link to={`/${query ? `?${query}` : ''}`}>Back to home</Link>
+
+      {/* flex-wrap, not horizontal scroll: "Professional Triathletes" and
+          "Cycling Teams" alongside three other pills won't fit one line on
+          a phone, and a scroll gesture hides options nobody knows are
+          there. Wrapping keeps every option visible at every width. */}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Link
+          to={`/${query ? `?${query}` : ''}`}
+          className="rounded-full border border-neutral-600 px-4 py-1.5 text-sm font-medium text-neutral-300 hover:text-white"
+        >
+          {'<< Back to home'}
+        </Link>
+
+        {CATEGORIES.map((category) => {
+          const isSelected = selectedCategories.includes(category.value)
+          return (
+            <button
+              key={category.value}
+              type="button"
+              onClick={() => toggleCategory(category.value)}
+              className={
+                isSelected
+                  ? 'rounded-full border border-yellow-400 bg-yellow-400 px-4 py-1.5 text-sm font-medium text-neutral-900'
+                  : 'rounded-full border border-neutral-600 px-4 py-1.5 text-sm font-medium text-neutral-400 hover:text-neutral-200'
+              }
+            >
+              {category.label}
+            </button>
+          )
+        })}
+      </div>
+
+      <h1 className="mt-4">{heading}</h1>
 
       {loading && <p>Loading…</p>}
 

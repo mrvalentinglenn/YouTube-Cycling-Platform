@@ -119,22 +119,27 @@ GRANT SELECT, INSERT, UPDATE ON job_runs TO service_role;
 -- Added 2026-08-21, when the scoring view was built. Until then no role but
 -- service_role held any privilege on anything here.
 --
--- scoring_view is security_invoker = true, so it checks the QUERYING role's
--- permissions on the underlying tables rather than its creator's. anon
--- therefore needs both layers opened on the three tables the view reads, not
--- only on the view itself. Granting on the view alone returns empty results
--- with no error — the RLS failure mode, and the hardest kind to debug.
---
--- The alternative was to make scoring_view a definer view so it could read
--- the tables on anon's behalf while the tables stayed sealed. Rejected — see
--- DECISIONS.md 2026-08-21.
---
 -- SELECT only. No INSERT, UPDATE or DELETE to anon under any circumstances:
 -- the collection job remains the only writer.
 --
--- job_runs is deliberately absent. The view never reads it, and it holds our
--- own operational data rather than public YouTube data. Verified: as anon,
+-- job_runs is deliberately absent. Neither the live scoring query nor the
+-- materialised view built from it ever reads job_runs, and it holds our own
+-- operational data rather than public YouTube data. Verified: as anon,
 -- `select count(*) from job_runs` returns 42501 permission denied.
+--
+-- Historical note, since the reasoning changed under this grant without the
+-- grant itself changing: `scoring_view` was originally a security_invoker
+-- LIVE view, so anon's direct SELECT on videos/channels/video_snapshots
+-- below existed because the view checked anon's OWN permissions on those
+-- tables at query time — granting on the view alone would have returned
+-- empty results with no error, the RLS failure mode, and the hardest kind
+-- to debug. `scoring_view` is now a MATERIALISED view (see sql/scoring_view.sql)
+-- refreshed by service_role, which is a definer-style read of the base
+-- tables regardless of who queries the stored result afterwards — so anon's
+-- grant on `scoring_view` itself no longer depends on these three. They stay
+-- granted regardless: `channels` is still read directly by the front end
+-- (see queries.js getChannels()), and revoking the other two wasn't asked
+-- for and isn't done here on a guess.
 -- ================================================================
 
 grant select on videos          to anon;
@@ -186,3 +191,47 @@ from videos v
 join channels c on c.channel_id = v.channel_id;
 
 revoke all on videos_readable from anon, authenticated;
+
+-- ============================================================
+-- scoring_view — structural mirror only. The full query (the CTEs, the
+-- LATERAL baseline computation, every comment explaining why) lives in
+-- exactly one place, sql/scoring_view.sql, and is deliberately not
+-- duplicated here — same single-source principle as DEFAULT_FILTERS and
+-- getPageSize in frontend/src/lib/filters.js. Run that file, not this
+-- section, to actually create or change any of this. What follows is a
+-- description of what exists, kept here because this file is meant to be
+-- a complete account of the database, not the objects themselves.
+--
+-- Two objects. scoring_view_live is the query — a security_invoker = true
+-- live view, ungranted, read by nothing except the refresh below.
+-- scoring_view is a materialised view, `select * from scoring_view_live`,
+-- carrying three indexes (a unique index on (video_id, "window", metric),
+-- and one each on value and outlier_score, both ending nulls last to match
+-- the front end's required ordering) and the only grant: SELECT to anon.
+--
+-- Materialised rather than live as of 2026-08-23, reversing the 2026-08-19
+-- decision to keep this live. Measured cause: four categories merged on the
+-- long-form arm exceeds anon's 3-second statement_timeout even fetching
+-- rows alone, with no count involved — the view had already been optimised
+-- 730x and had nothing further to give, and a live view has no storage of
+-- its own to index. The silent-staleness risk a materialised view normally
+-- carries is closed in collect.py instead: refresh_scoring_view() is
+-- called only after the three failure checks pass, and a failed refresh is
+-- written to job_runs as status = 'failed' with an error_message naming
+-- the refresh, which suppresses the Healthchecks ping — the same loud
+-- failure path as everything else the job does.
+--
+-- refresh_scoring_view() is SECURITY DEFINER, owned by postgres, because
+-- REFRESH requires ownership of the view and service_role does not own it.
+-- EXECUTE is granted to service_role only — never to anon or PUBLIC — so
+-- this is the one place in the schema where a role reaches an elevated
+-- privilege through a function rather than holding it directly, and it is
+-- reachable by exactly the one role authorised to trigger a refresh.
+--
+-- Genuine exception to the two-layer access model, stated here as well as
+-- in scoring_view.sql: RLS does not apply to materialised views, and a
+-- materialised view cannot be security_invoker — it always reads the
+-- tables it's built from as its owner. Accepted because it exposes nothing
+-- anon could not already reach directly (see the historical note on the
+-- anon grants above), not because the exception is free.
+-- ============================================================

@@ -1,9 +1,44 @@
 -- Scoring view for the YouTube Trends Platform.
--- See CLAUDE.md "Scoring — LOCKED" for the spec this implements, and
--- DECISIONS.md ("Scoring runs in a live view, not a materialised one" and
--- "videos_readable view, and views default to security definer") for why
--- this is a live view with security_invoker = true rather than a
--- materialised one owned by postgres.
+-- See CLAUDE.md "Scoring — LOCKED" for the spec this implements.
+--
+-- TWO OBJECTS NOW, NOT ONE.
+--
+--   scoring_view_live  — the query itself. Unchanged logic from the
+--                         original live view: same CTEs, same LATERAL
+--                         baseline computation, same security_invoker = true,
+--                         same absence of ORDER BY. Only its name changed.
+--                         No grants — nothing queries this directly.
+--
+--   scoring_view       — a materialised view, `select * from
+--                         scoring_view_live`, holding the stored result.
+--                         This is what the front end and anon actually read,
+--                         and what carries the indexes.
+--
+-- Why: DECISIONS.md 2026-08-19 chose a live view specifically because a
+-- materialised one can fail silently — a broken REFRESH serves stale scores
+-- with no error. That risk is why this stayed live for as long as it did.
+-- Measured against the real anon statement_timeout (3s, confirmed via
+-- pg_roles — the SQL editor's own session runs as a role with an 8s budget,
+-- which is why nothing looked wrong when the query was tested by hand), four
+-- categories merged on the long-form arm takes 3.0-3.4s and is cancelled
+-- outright, even fetching rows alone with no count. The view was already
+-- optimised 730x on 2026-08-21; there is no further win inside the query
+-- itself, and a live view cannot be indexed on its own output. Materialising
+-- is the remaining lever.
+--
+-- The silent-staleness risk this was originally rejected for is closed a
+-- different way now: collect.py calls refresh_scoring_view() only after its
+-- three failure checks pass, and a failed refresh is itself written to
+-- job_runs as status = 'failed' with an error_message naming the refresh,
+-- which suppresses the Healthchecks ping. A broken refresh is exactly as
+-- loud as a broken collection run, because it goes through the same
+-- mechanism.
+--
+-- Keeping the old name on the materialised view rather than the live one is
+-- deliberate: nothing in frontend/ changes — no query string, no column
+-- name, no contract. The scoring logic still lives in exactly one place,
+-- scoring_view_live; the materialised view is a stored copy of it, not a
+-- second implementation that could drift from it.
 --
 -- SHAPE. Tall: one row per video, per window, per metric. Only the 90-day
 -- window exists yet, so today every video produces 3 rows (views, likes,
@@ -13,9 +48,10 @@
 -- one. See the comment marking where that block goes.
 --
 -- "window" is a reserved SQL keyword (it's also the name of a real SQL
--- feature, window functions), so every use of it as a column name below is
--- double-quoted: "window". Forgetting a quote there is a syntax error, not
--- a silent bug, so Postgres will catch it immediately if one is missed.
+-- feature, window functions), so every use of it as a column name below —
+-- including in the index definitions further down — is double-quoted:
+-- "window". Forgetting a quote there is a syntax error, not a silent bug, so
+-- Postgres will catch it immediately if one is missed.
 --
 -- BASELINE PERFORMANCE. The first version of this view computed each
 -- video's baseline with a LATERAL subquery that re-scanned the entire
@@ -25,15 +61,18 @@
 -- pool exactly once, up front, as two small parallel arrays, and each
 -- output row's LATERAL join then does nothing more than unnest those two
 -- arrays (at most 16 elements) and exclude itself. Same numbers out; the
--- work moved from "per row" to "per group".
+-- work moved from "per row" to "per group". This is the 730x fix
+-- referenced above — it is why a single-category query is fast at all, and
+-- also why there was nothing further to win by optimising the query again
+-- rather than storing its result.
 --
 -- CREATE OR REPLACE VIEW cannot change a view's column list or column
 -- types. This rewrite keeps both identical, but DROP + CREATE is used
 -- anyway so a future change that does alter them doesn't fail confusingly
 -- on a stale view definition.
-drop view if exists scoring_view;
+drop view if exists scoring_view_live;
 
-create or replace view scoring_view
+create or replace view scoring_view_live
 with (security_invoker = true) as
 
 -- ================================================================
@@ -251,7 +290,10 @@ with (security_invoker = true) as
 --     from videos v ...
 --   )
 --
--- same column shape, same precomputed-pool pattern.
+-- same column shape, same precomputed-pool pattern. Once added, refresh
+-- the materialised view (below) picks up the new arm automatically on its
+-- next run — nothing about materialising this changes how that addition
+-- works.
 -- ================================================================
 
 -- ================================================================
@@ -271,22 +313,151 @@ with (security_invoker = true) as
 -- printed on it. In supabase-js:
 --
 --   .order('outlier_score', { ascending: false, nullsFirst: false })
+--
+-- The two indexes on the materialised view further down bake nulls-last
+-- in at the index level, so this remains true for `scoring_view` as read
+-- by the front end even though the ORDER BY itself lives only in the
+-- query, never in either view.
 -- ================================================================
 
 -- ================================================================
--- Access control — deliberately nothing granted yet.
---
--- Same two-layer model as schema.sql: RLS on the underlying tables already
--- seals this view for any role without an explicit grant, and
--- security_invoker = true (set above) makes sure the view checks the
--- QUERYING role's permissions rather than its owner's — without it, a view
--- created through the Supabase SQL editor runs as `postgres` and would
--- read straight through RLS regardless of who queries it.
+-- scoring_view_live carries no grants. Nothing queries it directly —
+-- anon reads the materialised view below, and the only other reader is
+-- refresh_scoring_view(), which runs as this view's owner (postgres) via
+-- SECURITY DEFINER, not as a role that needs its own grant.
 --
 -- This REVOKE is not a grant — it's the same explicit "make sure nothing
 -- is open" statement schema.sql uses for videos_readable, since "automatic
 -- expose" only covers tables created through the UI, not views created by
--- hand. SELECT for `anon` is a deliberate later step, added only when the
--- front end needs it.
+-- hand.
 -- ================================================================
-revoke all on scoring_view from anon, authenticated;
+revoke all on scoring_view_live from anon, authenticated;
+
+-- ================================================================
+-- scoring_view — the materialised view. `select * from scoring_view_live`
+-- is the entire definition: the scoring logic lives in exactly one place,
+-- above, and this is a stored copy of its output, not a second
+-- implementation that could drift from it.
+--
+-- Populated immediately on creation (CREATE MATERIALIZED VIEW ... AS
+-- SELECT defaults to WITH DATA), so there is no empty-table window between
+-- running this and the site having something to show — no manual first
+-- refresh is required for that reason. The separate "run this once after
+-- creating" block at the end of this file exists anyway, to bring the
+-- data up to the current moment rather than whatever it was when this
+-- script ran.
+-- ================================================================
+drop materialized view if exists scoring_view;
+
+create materialized view scoring_view as
+select * from scoring_view_live;
+
+-- ================================================================
+-- Indexes. This is where the actual speed comes from, and the thing a
+-- live view structurally cannot have — a view has no storage of its own
+-- to index.
+--
+-- All three lead with the columns the front end always filters on with
+-- .eq(): is_short and metric (window too, once a second arm exists — it's
+-- included now for forward compatibility even though every row currently
+-- shares the one value '90d'). category is deliberately NOT an index
+-- column: with only four possible values it barely narrows anything, and
+-- leaving it out lets Postgres apply .in('category', [...]) as a filter
+-- while walking an index that is already in the right sort order — for a
+-- merged multi-category selection that's still a single ordered scan, not
+-- a scan followed by a separate sort.
+-- ================================================================
+
+-- Enforces the shape the view is built to guarantee: one row per video,
+-- per window, per metric. numerator holds exactly one row per video_id
+-- (DISTINCT ON), metrics unpivots each into exactly 3 rows (one per
+-- literal metric value), and every join after that is 1:1 or a
+-- single-row aggregate — nothing in the query can fan a (video_id,
+-- window, metric) tuple out to more than one row. This is also the
+-- prerequisite for REFRESH ... CONCURRENTLY below: Postgres requires a
+-- unique index on a materialised view before it will refresh one without
+-- locking readers out for the duration.
+create unique index scoring_view_video_window_metric_idx
+  on scoring_view (video_id, "window", metric);
+
+-- Absolute comparison: order by value desc, nulls last. Postgres stores
+-- DESC indexes NULLS FIRST by default, so nulls last must be written into
+-- the index definition itself to match what the front end actually asks
+-- for (.order('value', { ascending: false, nullsFirst: false })) — without
+-- it, this index still helps but Postgres falls back to a sort step on
+-- top of it rather than reading the rows out in final order directly.
+create index scoring_view_value_idx
+  on scoring_view (is_short, "window", metric, value desc nulls last);
+
+-- Relative comparison: same shape, ordered by outlier_score instead.
+-- nulls last here is load-bearing in the way CLAUDE.md's front-end
+-- contract describes, not just a performance nicety: outlier_score is
+-- NULL for any video without a valid baseline, and without nulls-last
+-- ordering (in the query, mirrored here in the index) those videos would
+-- sort to #1 with no score to show for it.
+create index scoring_view_outlier_score_idx
+  on scoring_view (is_short, "window", metric, outlier_score desc nulls last);
+
+-- ================================================================
+-- Access control on the materialised view — a genuine exception to the
+-- two-layer model used everywhere else in this project, stated plainly
+-- rather than smoothed over:
+--
+--   RLS does not apply to materialised views at all. There is no policy
+--   layer here, only the grant below.
+--
+--   A materialised view cannot be security_invoker — that option does not
+--   exist for this object type. It always reads the tables it's built
+--   from as its OWNER (postgres) at refresh time, regardless of who
+--   queries the stored result afterwards.
+--
+-- In practice this exposes nothing new: anon already holds SELECT
+-- directly on channels, videos and video_snapshots — all public YouTube
+-- data collected from a public API — so postgres reading them to build
+-- this view is not reaching anon any data anon couldn't already reach
+-- directly. But it is a real deviation from "the querying role's own
+-- permissions decide what it sees", and if that ever stops being true —
+-- if a table this view reads ever holds something anon shouldn't see
+-- directly — this exception needs re-examining, not just this comment.
+-- ================================================================
+grant select on scoring_view to anon;
+
+-- ================================================================
+-- refresh_scoring_view() — called from collect.py after its three
+-- failure checks pass, never before. supabase-py cannot execute arbitrary
+-- SQL, so this function is the interface: the Python client calls it by
+-- name via .rpc(), and the REFRESH itself runs inside Postgres.
+--
+-- SECURITY DEFINER is necessary, not optional, for the same reason it's
+-- necessary on videos_readable's underlying tables reasoning does not
+-- apply here — this is the reverse case. Refreshing a materialised view
+-- requires ownership of it. service_role does not own scoring_view;
+-- postgres does, as the role that runs this script. Without SECURITY
+-- DEFINER, service_role calling this function would attempt the REFRESH
+-- as itself and fail with a permissions error. The function instead runs
+-- with postgres's privileges, but only service_role can ever reach it —
+-- EXECUTE is revoked from PUBLIC and granted to service_role alone, so
+-- the elevated privilege this function carries is reachable by exactly
+-- one role, never by anon. `set search_path = public` is standard
+-- hardening for SECURITY DEFINER functions, so it cannot be tricked by a
+-- caller with a different search_path into resolving `scoring_view`
+-- against a different schema.
+--
+-- CONCURRENTLY so a refresh never blocks a visitor's read mid-request —
+-- readers keep seeing the previous snapshot until the new one is ready,
+-- then the swap is atomic. This is what the unique index above exists to
+-- allow; REFRESH CONCURRENTLY is a Postgres error without one.
+-- ================================================================
+create or replace function refresh_scoring_view()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  refresh materialized view concurrently scoring_view;
+end;
+$$;
+
+revoke all on function refresh_scoring_view() from public;
+grant execute on function refresh_scoring_view() to service_role;

@@ -443,10 +443,27 @@ as a column and any date cap is a `WHERE` clause the front end adds per
 request. Deliberately not in the view — hardcoding it would turn a possible
 user-facing toggle into a fixed constant.
 
-The view is **live**, not materialised — it recomputes on read, so it can never
-serve stale scores. Switching to a materialised view refreshed by the collection
-job is a change behind the same two fields, to be made only if the median query
-measurably slows the page once real snapshots exist.
+The view is **materialised**. Two objects: `scoring_view_live` holds the query
+— the scoring logic lives there and nowhere else — and `scoring_view` is a
+stored copy of its output, carrying the indexes and read by the front end. The
+front end reads the same name it always did, so the contract above is
+unchanged.
+
+`collect.py` calls `refresh_scoring_view()` after its three failure checks
+pass, never before: a run that failed its checks must not publish its data to
+the page. A failed refresh is itself a failed run — `status = 'failed'`, an
+`error_message` naming the refresh, and no Healthchecks ping.
+
+Adding the 7-day arm is unaffected: it is a second `union all` block inside
+`scoring_view_live`, and the next refresh picks it up.
+
+Access-control exception, stated rather than glossed: RLS does not apply to
+materialised views, and they cannot be `security_invoker` — they read the
+underlying tables as their owner. This exposes nothing new, since `anon`
+already holds SELECT on `channels`, `videos` and `video_snapshots`, all public
+YouTube data. But it is a real deviation from the two-layer model and needs
+re-examining if any table this view reads ever holds something `anon` should
+not see directly.
 
 ## Prototype features — must have
 
@@ -718,7 +735,12 @@ The collection job must:
    than duplicating.
 6. Write a row to `job_runs` recording start, finish, status, row count, and any
    error.
-7. Ping the Healthchecks.io URL as the final action, only on full success.
+7. Refresh the materialised view by calling `refresh_scoring_view()`, only
+   after all three failure checks have passed. A run that failed its checks
+   must not publish its data. If the refresh itself fails, the run is failed:
+   `status = 'failed'`, an `error_message` naming the refresh, and no ping.
+   Runs in every mode, backfill included.
+8. Ping the Healthchecks.io URL as the final action, only on full success.
 
 **Fail loudly — three checks, all of which must pass for `status = 'success'`.**
 

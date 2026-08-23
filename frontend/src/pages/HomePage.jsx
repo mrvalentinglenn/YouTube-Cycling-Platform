@@ -1,9 +1,6 @@
 import { Link, useSearchParams } from 'react-router-dom'
 import FilterBar from '../components/FilterBar'
-
-// Fixed order per CLAUDE.md: Brands, Professional Triathletes, Cycling
-// Teams, Influencers.
-const CATEGORIES = ['brands', 'triathletes', 'teams', 'influencers']
+import { CATEGORIES } from '../lib/filters'
 
 export default function HomePage({ channels }) {
   const [searchParams] = useSearchParams()
@@ -15,9 +12,9 @@ export default function HomePage({ channels }) {
       <h1 className="text-4xl font-bold text-white">Home</h1>
       <ul>
         {CATEGORIES.map((category) => (
-          <li key={category}>
-            <Link to={`/category/${category}${query ? `?${query}` : ''}`}>
-              {category}
+          <li key={category.value}>
+            <Link to={`/category/${category.value}${query ? `?${query}` : ''}`}>
+              {category.value}
             </Link>
           </li>
         ))}

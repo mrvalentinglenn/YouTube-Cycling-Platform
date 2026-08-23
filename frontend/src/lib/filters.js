@@ -48,3 +48,44 @@ export function resolveFilters(searchParams) {
 export function getPageSize(format) {
   return format === 'shorts' ? 24 : 20
 }
+
+// Canonical order for the four categories — the homepage's section order,
+// the category page's button row, and URL serialisation all read from this
+// one list rather than each keeping their own copy. Deliberately the
+// homepage's order, not alphabetical: a user arriving from the homepage
+// seeing the same four things in a different order reads as carelessness.
+export const CATEGORIES = [
+  { value: 'brands', label: 'Brands' },
+  { value: 'triathletes', label: 'Professional Triathletes' },
+  { value: 'teams', label: 'Cycling Teams' },
+  { value: 'influencers', label: 'Influencers' },
+]
+
+// Turns the raw `:categories` route param into a canonically-ordered,
+// deduplicated array of valid category values. Unknown tokens (a typo, a
+// stale link, someone hand-editing the URL) are dropped rather than
+// erroring — parsing defensively here is what lets the page redirect to a
+// sane state instead of rendering on bad input.
+export function parseCategories(rawParam) {
+  const requested = new Set(
+    (rawParam ?? '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean),
+  )
+  return CATEGORIES.filter((category) => requested.has(category.value)).map(
+    (category) => category.value,
+  )
+}
+
+// The inverse: turns a list of category values (in any order, with any
+// duplicates) back into the canonical comma-separated path segment. Both
+// this and parseCategories() independently reorder to match CATEGORIES, so
+// a given selection has exactly one URL — "brands,teams" and "teams,brands"
+// can never both exist as addresses for the same state.
+export function serializeCategories(categoryValues) {
+  const selected = new Set(categoryValues)
+  return CATEGORIES.filter((category) => selected.has(category.value))
+    .map((category) => category.value)
+    .join(',')
+}

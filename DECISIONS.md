@@ -11,31 +11,39 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-21*
+*Last updated: 2026-08-23*
 
 **Collection is unattended.** Daily runs fire on their own at 132–134
-snapshots. The `weekly` path still hasn't fired on a real Monday; 24 August is
-the first, and it should record `mode = 'weekly'` with ~400 rows.
+snapshots. Tomorrow, 24 August, is the first real Monday: it should record
+`mode = 'weekly'` with ~400 rows, and it is also the first run to exercise the
+new refresh call. Two untried paths in one run.
 
-**The scoring view is built, 90-day arm only.** Tall shape,
-`security_invoker = true`, 357 ms for a full read, mirrored into
-`sql/schema.sql`. `anon` holds SELECT on `channels`, `videos` and
+**Scoring is now a materialised view.** `scoring_view_live` holds the query,
+logic unchanged; `scoring_view` is the stored copy under the old name, so
+nothing in `frontend/` moved. Three indexes: unique on
+`(video_id, "window", metric)`, plus one per sort column with nulls-last baked
+in. The case that timed out — four categories, long-form — is instant, and
+`count(*)` returns 11,970 immediately. Still 90-day arm only. `anon` holds
+SELECT on the materialised view and on `channels`, `videos` and
 `video_snapshots`; `job_runs` stays sealed.
 
-**The category page is functional and styled.** Vite + React + React Router in
-`frontend/`, Tailwind v4, filter state in the URL. Working: the four-filter bar
-on both routes, a responsive card grid at format-dependent page sizes, the
-Outlier Score badge, the Provisional badge, pagination with a computed last
-page, and YouTube links in a new tab. Verified in the browser rather than
-assumed — filters survive refresh and navigation, sorting moves between
-`outlier_score` and `value`, rank offsets correctly, and a 7d query returns
-zero rows as it should.
+**The category page takes a selection of categories, not one.** The route is
+`/category/:categories`, carrying a comma-separated list of raw database values
+in canonical order, so one selection has exactly one URL. Buttons toggle
+membership, the last one cannot be removed, and a change resets `page` to 1.
+Results are a single merged ranking across the selection, not one block per
+category. `CATEGORIES` lives in `frontend/src/lib/filters.js` and the homepage
+reads its section order from the same list. Verified in the browser across all
+four filter combinations, since Shorts and Relative exercise different indexes
+from the long-form Absolute default.
 
-The channel exclusion filter is in progress: the plumbing runs through the
-resolver and the query, and the homepage will pick it up when its sections
-exist.
+The rest of the category page is unchanged and still working: the four-filter
+bar on both routes, the responsive grid at format-dependent page sizes, the
+Outlier Score and Provisional badges, pagination, and YouTube links in a new
+tab. The channel exclusion filter is still plumbing-only, waiting on the
+homepage sections.
 
-Data on hand: ~3,970 videos across 40 channels.
+Data on hand: ~3,970 videos across 40 channels, 11,970 scored rows.
 
 Not built: the 7-day arm of the scoring view, which needs day-7 readings that
 first exist around 26–27 August; the homepage category sections; hosting.
@@ -45,6 +53,110 @@ first exist around 26–27 August; the homepage category sections; hosting.
 ---
 
 ## Decisions
+
+**2026-08-23 — Scoring moved to a materialised view; the live-view decision's
+own escape clause fired.**
+The category page was extended to accept a selection of categories rather than
+one, which turned `.eq('category', x)` into `.in('category', [...])`. Two
+categories timed out. Four categories timed out on the row fetch alone, with no
+count involved: 3,072–3,376 ms against `anon`'s 3-second budget.
+
+The first reading was that the exact count was at fault, since it forces the
+full baseline computation with no LIMIT to bound it. That was true but not the
+cause. `anon` carries `statement_timeout = 3s` and one category was already
+taking ~1.8 s — 60% of the budget, entirely lineair in category count. The cliff
+was simply much closer than anyone had measured. `authenticated` carries 8 s,
+which is why nothing looked wrong when queries were tested by hand in the SQL
+editor: the two roles were never compared.
+
+So this was not a bug introduced by the category selector. It was an existing
+condition the selector made visible, and `video_snapshots` grows daily, so it
+was arriving regardless.
+
+Raising the timeout was rejected. The worst observed run was 3,376 ms; a 3.5 s
+limit leaves 124 ms of headroom against a measured 300 ms run-to-run spread, so
+the page would work roughly half the time with no pattern — worse than failing
+consistently, because it never reproduces on demand. And 3.4 s is a bad page
+whether or not it fits: a recruiter clicking the link waits three and a half
+seconds at a blank screen. Raising the limit does not make the page faster, it
+removes the only signal that it is slow.
+
+This is the clause the 2026-08-19 live-view decision wrote for itself: measure
+it once real data exists, and switch only if it is actually slow. On 2026-08-21
+that clause was tested and correctly *not* triggered — the cause was the query,
+the LATERAL fix took it from 4,503,624 to 6,187, and the live view stood. This
+time the query has already been optimised 730× and is still over budget, and a
+live view structurally cannot be indexed on its own output. The lever is gone;
+the remaining one is storage.
+
+Two objects rather than one. `scoring_view_live` holds the query, byte-identical
+to what it was — same CTEs, same precomputed pools, same `security_invoker =
+true`, same absence of ORDER BY, only the name changed. `scoring_view` is a
+materialised `select * from scoring_view_live` and takes the old name, so
+nothing in `frontend/` changes: no query string, no column name, no contract.
+The scoring logic still lives in exactly one place; the materialised view is a
+stored copy of its output, not a second implementation that could drift. The
+rename also *is* the rollback — nothing was deleted at any point.
+
+The indexes are where the speed actually comes from, and the thing the live view
+could never have. A unique index on `(video_id, "window", metric)`, which both
+enforces the shape the view is built to guarantee and is what `REFRESH
+CONCURRENTLY` requires. Then one index per sort column, `(is_short, "window",
+metric, value desc nulls last)` and the same on `outlier_score`, with nulls-last
+written into the index definition so it matches what the front end actually
+asks for — a DESC index defaults to NULLS FIRST, and without the match Postgres
+falls back to sorting on top of the index rather than reading rows out in final
+order.
+
+`category` is deliberately not an index column. With four possible values it
+barely narrows anything, and leaving it out lets Postgres apply
+`.in('category', [...])` as a filter while walking an index already in sort
+order — so a merged multi-category selection is still one ordered scan rather
+than a scan followed by a sort. The feature that broke this is the feature the
+index shape is designed around.
+
+Measured after: four categories, long-form, Relative — the case that timed out —
+is instant. `select count(*)` returns 11,970 immediately, which is the query
+that could not finish at all. All four filter combinations verified in the
+browser rather than assumed, since Shorts and Relative exercise different
+indexes from the long-form Absolute default.
+
+The staleness objection is answered by machinery that did not exist on
+2026-08-19. `collect.py` calls `refresh_scoring_view()` after its three failure
+checks pass and before the Healthchecks ping. A run that failed its checks
+cannot publish its data; a failed refresh writes `status = 'failed'` with an
+`error_message` naming it and suppresses the ping. A broken refresh is exactly
+as loud as a broken collection run, because it travels the same path. The
+original objection was correct on the facts and is now obsolete on the
+circumstances — worth separating, because the reasoning was never wrong.
+
+Two things accepted openly. `refresh_scoring_view()` is SECURITY DEFINER,
+necessarily: refreshing requires ownership, and `service_role` does not own the
+view. This is the deliberate version of the object rejected on 2026-08-21 —
+one function, one fixed statement, `search_path` pinned, EXECUTE revoked from
+PUBLIC and granted to `service_role` alone. The distinction that decision drew
+is exactly this one: a definer object is a hole when it is unintentional and a
+controlled gateway when it is designed as the only way in.
+
+And RLS does not apply to materialised views, which cannot be
+`security_invoker` — they read the underlying tables as their owner. It exposes
+nothing new, since `anon` already holds SELECT on all three tables directly and
+all of it is public YouTube data. But it is a genuine deviation from the
+two-layer model rather than a technicality, and it needs re-examining if any
+table this view reads ever holds something `anon` should not reach directly.
+
+Not yet verified: the refresh call inside `collect.py` has never run. The first
+scheduled run to exercise it is tomorrow, 24 August — which is also the first
+real Monday for the `weekly` path, so that run tests two untried paths at once.
+
+Worth keeping as method. The measurement that mattered was not of the failing
+query but of `pg_roles`: two roles with different timeouts is why a slow query
+looked fine when tested by hand and failed in the browser. And the instinct on
+seeing a timeout — raise the limit — would have converted a loud failure into a
+quiet one on a page that was genuinely too slow. Same shape as the 2026-08-21
+timeout, where reaching for the materialised fallback would have preserved a
+query doing 6,000× more work than it needed to. The answer differs; reading the
+cause before reaching for the limit is what both have in common.
 
 **2026-08-21 — The Shorts grid bug was one fixed width, not three layout
 faults.**
@@ -1307,6 +1419,12 @@ more work than necessary and paid for it with the stale-data failure mode the
 original decision was written to avoid. Precomputing the baseline pools brought
 a full read to 357 ms and left the live view intact. The fallback remains
 available and is now much less likely to be needed. See the 2026-08-21 decision.
+*Superseded 2026-08-23 — no longer rejected. The reasoning above stands
+entirely: materialising then would have preserved a query doing 6,000× more
+work than necessary. The query was fixed instead, and has now been measured
+again at 3.0–3.4s against anon's 3s budget with nothing left to win inside it.
+Same fallback, reached for a different reason and after the cheaper lever was
+exhausted. See the 2026-08-23 decision.*
 
 **Fifteen candidates per precomputed baseline pool.**
 The natural figure, since the spec says the last 15 videos — and wrong. A video
@@ -1387,3 +1505,27 @@ contradiction rather than guessing, and the plumbing-only route was taken:
 `exclude` flows through the resolver and the query, and the sections will pick
 it up for free when they are built. Building both at once would have meant not
 knowing which half a failure came from.
+
+**Raising anon's statement_timeout from 3s to 3.5s.**
+The obvious response to a query measured at 3.0–3.4s, and the wrong one on the
+numbers it was proposed from. The worst observed run was 3,376ms, so 3.5s
+leaves 124ms of headroom against a measured 300ms run-to-run spread — the page
+would work about half the time, unpredictably, which is worse to live with than
+consistent failure because it never reproduces when you go looking. And
+`video_snapshots` grows daily, so the limit would need moving again within
+weeks. The deeper objection is that 3.4s is a bad page whether or not it fits
+inside the budget: raising the ceiling does not make it faster, it removes the
+only signal that it is slow. Rejected in favour of removing the work rather
+than widening the space it runs in.
+
+**Dropping the exact row count in favour of a `pageSize + 1` has-more check.**
+Genuinely attractive and nearly built. `count: 'exact'` is a second full
+execution of the view on every page load, so removing it would have roughly
+halved the database work everywhere, not merely unblocked the multi-category
+case — and "Page 3 of 8" is worth little on a ranked list nobody reads from the
+bottom. Overtaken rather than refuted: measurement showed four categories
+exceeded the budget on the row fetch alone, with no count involved, so this
+would not have been sufficient on its own. Materialising made the count fast
+enough that the question may not arise at all. Still the right first move if
+page load ever becomes the constraint again; whether `count: 'exact'` is now
+comfortably fast is unmeasured and sits in NEXT_STEPS.
