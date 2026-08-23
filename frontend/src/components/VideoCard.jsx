@@ -88,7 +88,7 @@ export default function VideoCard({ video, comparison }) {
         {video.is_provisional && (
           <span
             title="Provisional Score — baseline drawn from a limited number of reference videos."
-            className="absolute top-1 right-1 rounded bg-black/40 px-1.5 py-0.5 text-[10px] text-neutral-400"
+            className="absolute top-1 right-1 rounded bg-orange-400 px-1.5 py-0.5 text-[10px] text-neutral-900"
           >
             Provisional
           </span>
@@ -115,7 +115,7 @@ export default function VideoCard({ video, comparison }) {
           <span className="truncate text-xs text-neutral-400">{video.channel_name}</span>
         </div>
 
-        <div className="mt-1 flex items-center gap-3 text-xs text-neutral-400">
+        <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-neutral-400">
           <span className="flex items-center gap-1">
             <EyeIcon className="h-3.5 w-3.5" />
             {formatStat(video.views)}

@@ -1,24 +1,29 @@
-import { Link, useSearchParams } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
 import FilterBar from '../components/FilterBar'
-import { CATEGORIES } from '../lib/filters'
+import HomeCategorySection from '../components/HomeCategorySection'
+import { CATEGORIES, resolveFilters } from '../lib/filters'
 
-export default function HomePage({ channels }) {
+export default function HomePage({ channels, channelsLoaded }) {
   const [searchParams] = useSearchParams()
   const query = searchParams.toString()
+  const filters = resolveFilters(searchParams)
 
   return (
-    <div>
+    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
       <FilterBar channels={channels} />
-      <h1 className="text-4xl font-bold text-white">Home</h1>
-      <ul>
+
+      <div className="mt-6">
         {CATEGORIES.map((category) => (
-          <li key={category.value}>
-            <Link to={`/category/${category.value}${query ? `?${query}` : ''}`}>
-              {category.value}
-            </Link>
-          </li>
+          <HomeCategorySection
+            key={category.value}
+            category={category}
+            filters={filters}
+            channels={channels}
+            channelsLoaded={channelsLoaded}
+            query={query}
+          />
         ))}
-      </ul>
+      </div>
     </div>
   )
 }

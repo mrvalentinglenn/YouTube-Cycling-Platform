@@ -488,9 +488,32 @@ different view scales. Without the split, Shorts dominate every absolute
 ranking and the comparison is meaningless.
 
 **Results.** Four category sections in fixed order: Brands, Professional
-Triathletes, Cycling Teams, Influencers. Each shows the top 3 videos for the
-current filter combination, with rank (#1, #2, #3…), thumbnail, duration, title, channel name and avatar, and views / comments / likes. Under Relative comparison, the card also shows the Outlier Score as a multiple. Rank is positional — the front end derives it from the order of the returned rows, not from a column on the view. A "Show more" button expands to the full
-ranked list for that category.
+Triathletes, Cycling Teams, Influencers. Each section sits in its own bordered container — header bar with the category
+name centred, the card row, and the Show more button inside it — so the four
+read as distinct blocks rather than running together. Cards carry rank (#1, #2,
+#3…), thumbnail, duration, title, channel name and avatar, and views /
+comments / likes.
+
+Card counts are format- and breakpoint-dependent:
+
+| | Mobile | Tablet | Laptop | Wide |
+|---|---|---|---|---|
+| Long-form | 1 | 3 | 3 | 3 |
+| Shorts | 3 | 3 | 5 | 5 |
+
+Long-form stacks on mobile because a 16:9 thumbnail at a third of a 375px
+screen is ~110px wide, too small to read a title against. Portrait Shorts
+survive that width, which is why the two differ. Shorts fetch 5 and hide the
+4th and 5th below the laptop breakpoint in CSS — the row count is never read
+from the viewport in JavaScript.
+
+Shorts cards on the homepage carry a height cap so a section stays roughly as
+tall as its long-form equivalent.
+
+There is no page heading above the sections.
+
+Under Relative comparison, the card also shows the Outlier Score as a multiple. Rank is positional — the front end derives it from the order of the returned rows, not from a column on the view. A "Show more" button navigates to the category page for that category, carrying
+the current filters and exclusions.
 
 All four categories are always visible on one page — the cross-category view is
 the point. A marketer wants to see what teams are doing next to what brands are
@@ -513,13 +536,25 @@ decision log and the product together.
 | Route | What it is |
 |---|---|
 | `/` | Homepage — four category sections, top 3 each |
-| `/category/:category` | One category, ranked, 20 per page |
+| `/category/:categories` | One or more categories, merged into a single ranked list |
 
-`:category` carries the raw database value — `brands`, `triathletes`, `teams`,
-`influencers` — not a prettier slug. The CHECK constraint on
-`channels.category` already makes those four a closed set; a translation layer
-between URL and database would be a second place to maintain and would break
-silently on a rename.
+`:categories` is a comma-separated list of raw database values — `brands`,
+`triathletes`, `teams`, `influencers` — always serialised in the canonical
+order exported from `frontend/src/lib/filters.js`, so one selection has exactly
+one URL. Not a prettier slug: the CHECK constraint on `channels.category`
+already makes those four a closed set, and a translation layer would be a
+second place to maintain that breaks silently on a rename.
+
+The page carries a row of five buttons above the results: "<< Back to home"
+(neutral, real navigation) and the four categories (identical shape, yellow
+when selected). Clicking toggles membership; the last remaining category cannot
+be removed, so the page never reaches zero. Results are one merged ranking
+across the selection, not one block per category, and any change to the
+selection resets `page` to 1.
+
+This is a fifth filter in effect, but it answers "what is relevant to me"
+rather than "how do we measure" — the same distinction that puts the channel
+exclusion filter on its own row.
 
 **"Show more" is navigation, not expansion.** It leaves the homepage and opens
 the category page. That page shows the same ranking continued, numbered from
@@ -606,9 +641,13 @@ which is not the same as a score of zero: `0.0×` on a video with 40,000
 views reads as a broken product. The Provisional badge covers that case, so
 the card still says something — on the other corner.
 
-**The Provisional badge sits top-right and is deliberately subtle** — muted
-and low contrast. It is a caveat, not a warning, and must not compete with
-the score badge opposite it.
+**The Provisional badge sits top-right and is orange.** It was originally muted
+and low contrast on the reasoning that a caveat should not compete with the
+score badge opposite. In practice grey-on-thumbnail was unreadable against
+light images, and a caveat nobody can read is not doing its job. It is still
+visually lighter than the Outlier Score badge — the score is the
+differentiator and this is a qualifier on it — but it is now legible at any
+thumbnail brightness.
 
 **The channel filter answers a different question from the other four.**
 Window, metric, comparison and format all describe *how* performance is

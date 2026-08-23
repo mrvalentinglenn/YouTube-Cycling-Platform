@@ -11,48 +11,127 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-23*
+*Last updated: 2026-08-23 (second update)*
 
 **Collection is unattended.** Daily runs fire on their own at 132–134
 snapshots. Tomorrow, 24 August, is the first real Monday: it should record
 `mode = 'weekly'` with ~400 rows, and it is also the first run to exercise the
 new refresh call. Two untried paths in one run.
 
-**Scoring is now a materialised view.** `scoring_view_live` holds the query,
-logic unchanged; `scoring_view` is the stored copy under the old name, so
-nothing in `frontend/` moved. Three indexes: unique on
-`(video_id, "window", metric)`, plus one per sort column with nulls-last baked
-in. The case that timed out — four categories, long-form — is instant, and
-`count(*)` returns 11,970 immediately. Still 90-day arm only. `anon` holds
-SELECT on the materialised view and on `channels`, `videos` and
-`video_snapshots`; `job_runs` stays sealed.
+**Scoring is a materialised view.** `scoring_view_live` holds the query, logic
+unchanged; `scoring_view` is the stored copy under the old name, so nothing in
+`frontend/` moved. Three indexes: unique on `(video_id, "window", metric)`,
+plus one per sort column with nulls-last baked in. The case that timed out —
+four categories, long-form — is instant, and `count(*)` returns 11,970
+immediately. Still 90-day arm only. `anon` holds SELECT on the materialised
+view and on `channels`, `videos` and `video_snapshots`; `job_runs` stays
+sealed.
 
-**The category page takes a selection of categories, not one.** The route is
+**The category page takes a selection of categories.** Route is
 `/category/:categories`, carrying a comma-separated list of raw database values
 in canonical order, so one selection has exactly one URL. Buttons toggle
 membership, the last one cannot be removed, and a change resets `page` to 1.
-Results are a single merged ranking across the selection, not one block per
-category. `CATEGORIES` lives in `frontend/src/lib/filters.js` and the homepage
-reads its section order from the same list. Verified in the browser across all
-four filter combinations, since Shorts and Relative exercise different indexes
-from the long-form Absolute default.
+Results are one merged ranking, not one block per category. `CATEGORIES` lives
+in `frontend/src/lib/filters.js` and the homepage reads its section order from
+the same list.
 
-The rest of the category page is unchanged and still working: the four-filter
-bar on both routes, the responsive grid at format-dependent page sizes, the
-Outlier Score and Provisional badges, pagination, and YouTube links in a new
-tab. The channel exclusion filter is still plumbing-only, waiting on the
-homepage sections.
+**The homepage is built.** Four category sections in canonical order, each in
+its own bordered container with a centred header bar and the Show more button
+inside it. Four parallel queries, one per section, each rendering and failing
+independently. Card counts are format- and breakpoint-dependent — long-form
+1/3/3/3, Shorts 3/3/5/5 — with Shorts fetching 5 and hiding the last two below
+laptop in CSS. Show more links to that one category, carrying every filter and
+exclusion. Excluding every channel in a category leaves the section visible
+with a message rather than hiding it. Verified in the browser at 375px and at
+desktop width.
+
+The channel exclusion filter is complete: dropdown grouped by category with a
+name search, removable chips, counter and Reset, active on both routes.
 
 Data on hand: ~3,970 videos across 40 channels, 11,970 scored rows.
 
 Not built: the 7-day arm of the scoring view, which needs day-7 readings that
-first exist around 26–27 August; the homepage category sections; hosting.
+first exist around 26–27 August; filter bar icons; a full responsive pass on
+the filter bar and menu; hosting.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
 ---
 
 ## Decisions
+
+**2026-08-23 — The homepage built; card counts split by format and breakpoint,
+and one grid bug found twice.**
+Four sections, four parallel queries, each rendering and failing on its own so
+one slow or broken section cannot blank the page. Each section owns its fetch
+rather than the page gathering all four — parallelism by construction rather
+than by a Promise.all that would have to be kept parallel deliberately.
+
+Two things were carried over rather than reinvented. The homepage reads its
+section order from the same `CATEGORIES` list the category page's button row
+uses, so the two orderings cannot drift. And `getCategoryVideos` gained an
+optional page-size override rather than `getPageSize()` gaining a second
+meaning: the format/page-size relationship stays single-sourced in the helper,
+and "3 regardless of format" is a caller's need expressed at the call site. The
+same override suppresses `count: 'exact'`, since four sections each counting
+the whole view for a number the homepage never displays is four full executions
+per page load.
+
+Card counts ended up format- and breakpoint-dependent: long-form 1/3/3/3,
+Shorts 3/3/5/5 across mobile/tablet/laptop/wide. Long-form stacks on mobile
+because a 16:9 thumbnail at a third of a 375px screen is ~110px wide — too
+small to read a title against — while a portrait Short at the same width is
+still legible. The same reasoning that split page size 20/24 on the category
+page, arriving again from a different direction: the two formats have different
+shapes and a single number cannot serve both. Shorts fetch 5 and hide the last
+two below laptop in CSS, so the row count is never read from the viewport in
+JavaScript and there is no screen-size state to keep in sync.
+
+The instructive part was the overlap bug, because it was diagnosed wrong first.
+Cards spilled across each other on narrow screens; the first fix treated it as
+spacing and did not hold. The tell was in the numbering: the broken sections
+started at #2. The #1 card was not in its own grid cell at all — it was
+painting over its neighbours and past the container's edge, while sections
+whose #1 had a shorter title rendered correctly.
+
+That is the 2026-08-21 Shorts grid fault exactly: a card wider than its track
+overflows, and later grid items paint over earlier ones. Same cause, opposite
+origin — that one was a hardcoded `w-56` fighting a narrower cell, this one a
+grid item refusing to shrink below its content's intrinsic width. Both are the
+card and its container disagreeing about who decides the width.
+
+Worth recording that the earlier entry's lesson was available and still missed
+on the first pass. "Three symptoms in one component are usually one cause" was
+written down in this file, and the first response was still to add spacing where
+the symptom appeared. Reading the computed width against the track width — two
+minutes in DevTools — is what found it. The general form: when a layout looks
+like a spacing problem, check whether an element is the size it thinks it is
+before adjusting the space around it.
+
+Section containers were added because the four categories ran together and the
+Show more button floated between two sections with no visible owner. Bordered
+container per section with a centred header bar, the button inside it. A bright
+fill was proposed and declined: yellow already means "selected category" on the
+category page's button row, and a colour meaning two different things on one
+product is worse than a duller separator. Structure and border do the work
+instead.
+
+**2026-08-23 — Provisional badge changed from muted grey to orange, reversing
+the 2026-08-21 styling.**
+The original reasoning was that the badge is a caveat rather than a warning and
+must not compete with the Outlier Score badge opposite it. That reasoning still
+holds and is not withdrawn. It simply lost to an observation from looking at
+real thumbnails: grey on a bright image is unreadable, and a caveat nobody can
+read is not a quieter caveat, it is an absent one.
+
+Orange is deliberately a warning colour and that is a cost, accepted. The badge
+is kept visually lighter than the score badge so the ranking still wins the
+eye — the constraint the original decision was protecting survives even though
+its implementation did not.
+
+Same pattern as the channel exclusion filter reversal two days earlier: a
+defensible design argument overturned by a single concrete example from looking
+at the actual product rather than at the reasoning.
 
 **2026-08-23 — Scoring moved to a materialised view; the live-view decision's
 own escape clause fired.**
@@ -1529,3 +1608,27 @@ would not have been sufficient on its own. Materialising made the count fast
 enough that the question may not arise at all. Still the right first move if
 page load ever becomes the constraint again; whether `count: 'exact'` is now
 comfortably fast is unmeasured and sits in NEXT_STEPS.
+
+**A bright fill on the homepage section headers.**
+Proposed as yellow, matching the mockup. Declined because yellow already means
+"this category is selected" on the category page's button row, and the Outlier
+Score badge is purple — a third loud colour would make the page shout, and
+worse, yellow would mean two different things depending on where it appeared.
+The sections needed separating, which was the real observation; a bordered
+container with a subtly raised header bar does that through structure. Colour
+was not the thing doing the work.
+
+**Icons or emoji in the homepage section headings.**
+Two bike emoji per heading across four headings reads as decoration rather than
+design, and the filter bar is due its own icons from `preview.png` — the page
+would end up carrying two unrelated icon vocabularies for no gain.
+
+**Flex-wrap for the homepage card rows.**
+The first attempt, chosen on the reasoning that a row of at most three cards
+does not need the category page's responsive grid. It does not work: VideoCard
+is `w-full`, and a flex item with no basis takes the full row, so three cards
+stacked at full width instead of sitting side by side. Replaced with the same
+grid classes the category page uses, which also means a future breakpoint
+change cannot fix one page and silently break the other. Recorded because the
+reasoning was sound and the outcome still wrong — "three items don't need a
+grid" ignored that the grid was also what assigned each card its width.

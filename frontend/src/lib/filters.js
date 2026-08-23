@@ -89,3 +89,37 @@ export function serializeCategories(categoryValues) {
     .map((category) => category.value)
     .join(',')
 }
+
+// Complete, literal fragments only, looked up by number rather than built
+// with `grid-cols-${n}`. Tailwind's build-time scanner finds class names by
+// scanning each source file's raw text, not by evaluating JavaScript, so a
+// class name assembled at runtime would never be found and its CSS would
+// never be generated — the page would silently not respond to a column
+// count nobody wrote out as a literal string somewhere.
+const GRID_COLS_CLASSES = {
+  '': { 1: 'grid-cols-1', 2: 'grid-cols-2', 3: 'grid-cols-3', 4: 'grid-cols-4', 5: 'grid-cols-5', 6: 'grid-cols-6' },
+  md: { 1: 'md:grid-cols-1', 2: 'md:grid-cols-2', 3: 'md:grid-cols-3', 4: 'md:grid-cols-4', 5: 'md:grid-cols-5', 6: 'md:grid-cols-6' },
+  lg: { 1: 'lg:grid-cols-1', 2: 'lg:grid-cols-2', 3: 'lg:grid-cols-3', 4: 'lg:grid-cols-4', 5: 'lg:grid-cols-5', 6: 'lg:grid-cols-6' },
+  xl: { 1: 'xl:grid-cols-1', 2: 'xl:grid-cols-2', 3: 'xl:grid-cols-3', 4: 'xl:grid-cols-4', 5: 'xl:grid-cols-5', 6: 'xl:grid-cols-6' },
+}
+
+// The one place the category grid's column count per breakpoint, per
+// format, is decided — CLAUDE.md's layout table: long-form 1/2/4/5, Shorts
+// 3/4/6/6 (Shorts has no separate xl entry because its lg value already
+// carries up to every wider breakpoint, same as it not being listed at all
+// used to mean before this became data instead of two hand-written strings).
+const GRID_COLUMNS_BY_FORMAT = {
+  longform: { '': 1, md: 2, lg: 4, xl: 5 },
+  shorts: { '': 3, md: 4, lg: 6 },
+}
+
+// Returns the grid-cols-* class list for a format, one class per breakpoint
+// that format defines. The category page is the only caller — the homepage
+// uses a fixed grid-cols-3 at every breakpoint regardless of format, not a
+// responsive count, so it doesn't call this at all.
+export function getGridColumnsClassName(format) {
+  const columnsByBreakpoint = GRID_COLUMNS_BY_FORMAT[format] ?? GRID_COLUMNS_BY_FORMAT.longform
+  return Object.entries(columnsByBreakpoint)
+    .map(([breakpoint, columns]) => GRID_COLS_CLASSES[breakpoint][columns])
+    .join(' ')
+}

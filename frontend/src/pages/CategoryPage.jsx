@@ -2,7 +2,14 @@ import { useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import FilterBar from '../components/FilterBar'
 import VideoCard from '../components/VideoCard'
-import { CATEGORIES, getPageSize, parseCategories, resolveFilters, serializeCategories } from '../lib/filters'
+import {
+  CATEGORIES,
+  getGridColumnsClassName,
+  getPageSize,
+  parseCategories,
+  resolveFilters,
+  serializeCategories,
+} from '../lib/filters'
 import { getCategoryVideos } from '../lib/queries'
 
 export default function CategoryPage({ channels }) {
@@ -114,13 +121,9 @@ export default function CategoryPage({ channels }) {
 
   // Shorts run 9:16, so more of them fit per row than 16:9 long-form —
   // hence the different column counts at every breakpoint, per
-  // CLAUDE.md's layout table. Both class strings are complete, literal
-  // strings in the source, so Tailwind's scanner picks up whichever one
-  // isn't active at build time too.
-  const gridColumnsClassName =
-    filters.format === 'shorts'
-      ? 'grid-cols-3 md:grid-cols-4 lg:grid-cols-6'
-      : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5'
+  // CLAUDE.md's layout table. Shared with the homepage via filters.js
+  // rather than kept as a local literal here, so the two can't diverge.
+  const gridColumnsClassName = getGridColumnsClassName(filters.format)
 
   const heading = selectedCategories
     .map((value) => CATEGORIES.find((category) => category.value === value).label)
@@ -176,7 +179,7 @@ export default function CategoryPage({ channels }) {
         <div className={`grid gap-4 ${gridColumnsClassName}`}>
           {rows.map((row, index) => (
             <div key={row.video_id}>
-              <p className="mb-1 text-xs text-neutral-500">#{rankOffset + index + 1}</p>
+              <p className="mb-1 text-base font-semibold text-neutral-500">#{rankOffset + index + 1}</p>
               <VideoCard video={row} comparison={filters.comparison} />
             </div>
           ))}

@@ -41,6 +41,7 @@ export async function getCategoryVideos({
   format,
   page,
   exclude = [],
+  pageSize: pageSizeOverride,
 }) {
   const isShort = format === 'shorts'
 
@@ -48,10 +49,13 @@ export async function getCategoryVideos({
   // 'absolute' ranks by the raw figure itself.
   const orderColumn = comparison === 'relative' ? 'outlier_score' : 'value'
 
-  // getPageSize() is the one place this number is decided — see
-  // filters.js. Using anything else here would let this diverge from the
-  // rank offset CategoryPage computes with the same helper.
-  const pageSize = getPageSize(format)
+  // getPageSize() in filters.js stays the one place the format-dependent
+  // number is decided, and CategoryPage's calls (which never pass
+  // pageSize) get exactly that number, unchanged. pageSizeOverride exists
+  // for callers with a fixed, format-independent need — currently only the
+  // homepage, which always wants exactly 3 regardless of format.
+  const requestCount = pageSizeOverride === undefined
+  const pageSize = pageSizeOverride ?? getPageSize(format)
   const pageNumber = Number(page) || 1
   const from = (pageNumber - 1) * pageSize
   const to = from + pageSize - 1
@@ -66,9 +70,15 @@ export async function getCategoryVideos({
   // risk drifting from the row filters with no error to show for it — the
   // same failure shape as page size disagreeing between .range() and the
   // rank offset.
+  //
+  // Skipped entirely when a pageSize override is supplied: that's the
+  // homepage, which shows a fixed top 3 plus an unconditional Show More
+  // link and never reads the total. Four sections each paying for a full
+  // exact count of the view, for a number nothing displays, is wasted work
+  // on every homepage load.
   let queryBuilder = supabase
     .from('scoring_view')
-    .select(SELECT_COLUMNS, { count: 'exact' })
+    .select(SELECT_COLUMNS, requestCount ? { count: 'exact' } : {})
     .in('category', categories)
     .eq('window', window)
     .eq('metric', metric)
@@ -94,8 +104,11 @@ export async function getCategoryVideos({
 
   // Never thrown, never swallowed: the caller decides how to show a
   // failed query, and `rows` still defaults to an array so it's always
-  // safe to .map over even when `error` is set.
-  return { rows: data ?? [], error, totalCount: count ?? 0 }
+  // safe to .map over even when `error` is set. totalCount is null, not 0,
+  // when no count was requested — 0 would claim "we know the total and it's
+  // zero", which is false; null says "not asked for" and matches
+  // CategoryPage's existing behaviour exactly when it is asked for.
+  return { rows: data ?? [], error, totalCount: requestCount ? (count ?? 0) : null }
 }
 
 // The full channel list — channel_id, name, category. 40 rows that change

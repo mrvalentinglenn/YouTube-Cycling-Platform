@@ -57,31 +57,27 @@ A median of 1.04 is the baseline calibrating correctly.
 Scaffold, data layer, filter bar, video card and category grid are built and
 verified in the browser. Tailwind v4 is installed. What remains:
 
-1. [ ] Build the homepage: four category sections in fixed order, top 3 each,
-       "Show more" linking to the category page with the current params
-       attached. Uses the same `getCategoryVideos`, so exclusions apply for
-       free.
-2. [ ] Add the filter bar icons from `preview.png` — deliberately left out
+1. [ ] Add the filter bar icons from `preview.png` — deliberately left out
        while the cards did not exist to judge them against.
-3. [ ] Responsive pass across the whole page on a phone, not just the grid.
-4. [ ] Verify the Provisional label appears where it should. Matt Hauser has
+2. [ ] Responsive pass across the whole page on a phone, not just the grid.
+3. [ ] Verify the Provisional label appears where it should. Matt Hauser has
        no Shorts, so his Shorts rows should come back with a null score and
        `is_provisional = true`. Easiest route: filter `scoring_view` on
        `is_provisional = true` in the Supabase table editor, then find those
        videos in the front end.
-5. [ ] Revert the `window` default from `90d` to `7d` once the 7-day arm is
+4. [ ] Revert the `window` default from `90d` to `7d` once the 7-day arm is
        live. One line in `frontend/src/lib/filters.js`.
-6. [ ] Replace Vite's default `frontend/README.md` with something
+5. [ ] Replace Vite's default `frontend/README.md` with something
        project-specific.
-7. [ ] Choose a static host and deploy. Whichever it is, configure route
+6. [ ] Choose a static host and deploy. Whichever it is, configure route
        rewriting to `index.html` or a direct link to `/category/teams`
        returns 404.
-8. [ ] Measure whether `count: 'exact'` is now fast enough on four categories
+7. [ ] Measure whether `count: 'exact'` is now fast enough on four categories
         to keep "Page X of Y". It was never re-measured after materialising —
         we went straight past the question. If it is slow, the fallback is a
         `pageSize + 1` has-more check and a "Page 3" / Next-disabled UI. See
         DECISIONS Rejected.
-9. [ ] Drop `scoring_view_live`'s dead weight if the 7-day arm changes its
+8. [ ] Drop `scoring_view_live`'s dead weight if the 7-day arm changes its
         shape — no action now, just a reminder that the arm gets added inside
         `scoring_view_live`, not inside the materialised view, and the next
         refresh picks it up.       
