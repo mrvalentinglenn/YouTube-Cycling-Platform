@@ -151,6 +151,7 @@ export default function HomeCategorySection({ category, filters, channels, chann
       format: filters.format,
       page: '1',
       exclude: filters.exclude,
+      q: filters.q,
       pageSize: getTopCount(filters.format),
     }).then((result) => {
       if (cancelled) return
@@ -169,6 +170,7 @@ export default function HomeCategorySection({ category, filters, channels, chann
     filters.metric,
     filters.comparison,
     filters.format,
+    filters.q,
     excludeKey,
     allChannelsExcluded,
   ])
@@ -217,10 +219,21 @@ export default function HomeCategorySection({ category, filters, channels, chann
 
         {!allChannelsExcluded && !loading && error && <p>Error: {error.message}</p>}
 
+        {/* Distinct from allChannelsExcluded above — a user needs to know
+            which of the two is the reason nothing's showing. A section
+            emptied by a search says so specifically rather than rendering
+            an empty bordered box with only its header, which reads as
+            broken. */}
+        {!allChannelsExcluded && !loading && !error && filters.q && rows.length === 0 && (
+          <p className="text-sm text-neutral-500">No videos match "{filters.q}".</p>
+        )}
+
         {/* Fewer than topCount videos is expected and renders as-is — no
-            message, no filler. The 7-day window in particular will produce
-            this routinely until the pool of scored videos grows. */}
-        {!allChannelsExcluded && !loading && !error && (
+            message, no filler — EXCEPT when a search is the reason, which
+            is the case handled just above. The 7-day window in particular
+            will produce this routinely (with no search active) until the
+            pool of scored videos grows. */}
+        {!allChannelsExcluded && !loading && !error && !(filters.q && rows.length === 0) && (
           <div className={`grid gap-4 ${gridColumnsClassName}`}>
             {rows.map((row, index) => (
               <div key={row.video_id} className={getCardWrapperClassName(isShort, index)}>

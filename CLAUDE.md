@@ -467,8 +467,15 @@ not see directly.
 
 ## Prototype features — must have
 
-Single page, no accounts, no login, public and read-only. Layout reference:
-`preview.png` in the project folder.
+**Name: BikeTube — Cycling Content Tracker.** Wordmark left-aligned to the
+content column at the top of both routes, with the tagline as secondary text.
+The pun is on the inner tube. Note for the pre-publication review: YouTube's
+brand guidelines ask that third-party names not incorporate "Tube", which is
+irrelevant for a local prototype and relevant the moment this sits at a public
+URL — same review as the API Terms item.
+
+**Single page, no accounts** and no login — everything is public and read-only.
+Layout reference: `preview.png` in the project folder.
 
 **Filter bar, fixed at the top.** Four independent filters:
 
@@ -482,6 +489,32 @@ Single page, no accounts, no login, public and read-only. Layout reference:
 Any combination is valid — 24 in total. Example: 7-day + likes + relative +
 long-form ranks long-form videos by how far their day-7 likes exceeded the
 channel's median day-7 likes, among videos that reached day 7 in the last month.
+
+**Postgres full-text search, and semantic search, for the search bar.**
+Full-text would add word stemming and relevance ranking over the substring
+match actually built — "gravel" would properly find "gravelling", and results
+could be ordered by match quality rather than staying in outlier-score order.
+It needs its own column and its own index, and it still would not know that
+Unbound is a gravel race. Semantic search over embeddings would know that, and
+is weeks of work plus a model and a vector column.
+
+Substring matching is the right level for a prototype, and the reason is
+specific to this dataset rather than general: YouTube titles are keyword-
+stuffed because creators optimise them for search, so literal matching works
+far better on titles than it would on prose. The ceiling is worth being able to
+describe — "it is substring matching, which is honest about what it does;
+semantic search would find Unbound and Traka without the word gravel" is a
+better interview answer than having built something more elaborate that still
+could not do that.
+
+**Shortening the filter labels on mobile.**
+Offered when "COMPARISON" and "CONTENT TYPE" crowded each other at 375px:
+"WINDOW" and "TYPE" would fit comfortably. Declined because it trades away one
+vocabulary across all screen sizes for a fit problem that turned out to have a
+different cause — the four columns were each sized to their own text, and equal
+widths plus a shared label height fixed it without changing a word. Recorded
+because the obvious fix was to the symptom and the actual fault was one layer
+underneath it, which is the third time that pattern has appeared in this file.
 
 **Format filter is not optional.** Shorts and long-form sit on entirely
 different view scales. Without the split, Shorts dominate every absolute
@@ -571,6 +604,7 @@ not duplicated on screen, because the homepage is no longer there.
 | `format` | `longform` \| `shorts` | `longform` |
 | `page` | integer | `1` |
 | `exclude` | comma-separated `channel_id` list | empty — all channels shown |
+| `q` | free text | empty — no search |
 
 Missing params fall back to their default, so a bare URL always resolves to a
 valid state and no half-set combination has to be handled.
@@ -665,6 +699,26 @@ All channels are on by default and the URL carries only the exclusions, so a
 bare URL stays short. Excluding a channel filters which videos are listed
 and changes no other video's score, because baselines are computed per
 channel.
+
+**Search sits below the same dividing rule**, on its own full-width row above
+the Channels control. It is the second control to land on the relevance side of
+that line, which makes the rule structural rather than a one-off justification:
+window, metric, comparison and format answer *how do we measure*; exclusion and
+search both answer *what is relevant to me*. A full-width row also gives the
+input the width it needs at every breakpoint without competing with four
+dropdowns already tight at 375px.
+
+A case-insensitive substring match on the title — `.ilike('title', '%q%')` —
+carried in the URL as `q`, empty by default, debounced, resetting `page` to 1
+on change. Debounced commits use `replace` rather than `push` so the back
+button does not step through fragments of a word; clearing uses `push`.
+
+Titles only, because descriptions are not collected. The ceiling, stated
+plainly because it matters more than the feature: no synonyms ("bike" will not
+find "bicycle"), no typo tolerance, no relevance ranking — results stay in
+outlier-score order — and no knowledge of the sport, so it cannot know Unbound
+is a gravel race. Acceptable here partly because YouTube titles are
+keyword-stuffed by design, so most gravel videos do contain the word.
 
 **Thumbnails link to the video on YouTube, opening in a new tab.** This also
 settles the thumbnail question in YouTube's API Terms, which require a

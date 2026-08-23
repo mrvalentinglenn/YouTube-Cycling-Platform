@@ -11,12 +11,12 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-23 (second update)*
+*Last updated: 2026-08-23 (third update)*
 
 **Collection is unattended.** Daily runs fire on their own at 132–134
 snapshots. Tomorrow, 24 August, is the first real Monday: it should record
 `mode = 'weekly'` with ~400 rows, and it is also the first run to exercise the
-new refresh call. Two untried paths in one run.
+refresh call. Two untried paths in one run.
 
 **Scoring is a materialised view.** `scoring_view_live` holds the query, logic
 unchanged; `scoring_view` is the stored copy under the old name, so nothing in
@@ -27,38 +27,119 @@ immediately. Still 90-day arm only. `anon` holds SELECT on the materialised
 view and on `channels`, `videos` and `video_snapshots`; `job_runs` stays
 sealed.
 
-**The category page takes a selection of categories.** Route is
-`/category/:categories`, carrying a comma-separated list of raw database values
-in canonical order, so one selection has exactly one URL. Buttons toggle
-membership, the last one cannot be removed, and a change resets `page` to 1.
-Results are one merged ranking, not one block per category. `CATEGORIES` lives
-in `frontend/src/lib/filters.js` and the homepage reads its section order from
-the same list.
+**The front end is feature-complete for the prototype.** Both routes carry the
+same filter bar: four measurement filters, then a dividing rule, then search
+and the channel exclusion control. Below laptop the four collapse into
+dropdowns showing their current value under their existing labels; laptop and
+wide keep the full button rows. The category page takes a selection of
+categories at `/category/:categories`, merged into one ranking. The homepage
+shows four bordered sections, top 3 or 5 depending on format and breakpoint,
+each fetching and failing independently.
 
-**The homepage is built.** Four category sections in canonical order, each in
-its own bordered container with a centred header bar and the Show more button
-inside it. Four parallel queries, one per section, each rendering and failing
-independently. Card counts are format- and breakpoint-dependent — long-form
-1/3/3/3, Shorts 3/3/5/5 — with Shorts fetching 5 and hiding the last two below
-laptop in CSS. Show more links to that one category, carrying every filter and
-exclusion. Excluding every channel in a category leaves the section visible
-with a message rather than hiding it. Verified in the browser at 375px and at
-desktop width.
+Search is `q` in the URL, a case-insensitive substring match on the title,
+debounced, active on both routes. Titles only — descriptions are not
+collected.
 
-The channel exclusion filter is complete: dropdown grouped by category with a
-name search, removable chips, counter and Reset, active on both routes.
+Branding is in place: "BikeTube — Cycling Content Tracker", left-aligned to the
+content column on both routes.
+
+Verified in the browser at 375px, 768px and desktop rather than assumed.
 
 Data on hand: ~3,970 videos across 40 channels, 11,970 scored rows.
 
 Not built: the 7-day arm of the scoring view, which needs day-7 readings that
-first exist around 26–27 August; filter bar icons; a full responsive pass on
-the filter bar and menu; hosting.
+first exist around 26–27 August; filter bar icons; hosting.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
 ---
 
 ## Decisions
+
+**2026-08-23 — Search added, and the dividing rule turns out to be structural
+rather than a one-off.**
+A case-insensitive substring match on the title, carried in the URL as `q`,
+debounced, active on both routes. `.ilike('title', '%q%')` and nothing more.
+
+Where it sits is the part worth recording. The 2026-08-21 channel-exclusion
+entry drew a line between filters that answer *how do we measure* — window,
+metric, comparison, format — and filters that answer *what is relevant to me*.
+That line was drawn to justify one control. Search is unambiguously the second
+kind: "show me Ironman content" is a relevance question, not a measurement one.
+So the rule now carries three controls and has stopped being a justification
+for a single decision — it is the actual structure of the filter bar. A rule
+that holds for a second case it was not written for is worth more than the
+case it was written for.
+
+It also solved the layout problem it might have created. A search input needs
+width, and a full-width row below the rule gives it width at every breakpoint
+without competing with four dropdowns already tight at 375px.
+
+The ceiling is recorded deliberately rather than glossed, because knowing it is
+the more useful thing. Substring matching finds "gravel" inside "gravelbike"
+but has no synonyms ("bike" will not find "bicycle"), no typo tolerance, no
+relevance ranking — results stay in outlier-score order — and no knowledge of
+the sport, so it cannot know Unbound is a gravel race or Kona an Ironman one.
+Postgres full-text search would add stemming and ranking and still not know
+that; semantic search over embeddings would, and is weeks of work.
+
+Substring is the right level here partly for a reason specific to this dataset:
+YouTube titles are keyword-stuffed by design, because creators optimise them
+for search. Literal matching works better on titles than it would on prose, and
+most gravel videos do contain the word.
+
+Descriptions are not searched because they are not collected — the 2026-08-16
+decision declined them on the grounds that only the parked "why did it work"
+layer would use them. Worth noting the consequence found while deciding this:
+adding them later would only cover videos inside the collection window, so a
+2024 video from the backfill would never get one. That makes descriptions a
+worse "add later" candidate than they appear, though it does not change the
+decision.
+
+Two implementation notes. A local input buffer holds what is being typed
+between keystrokes and the debounced URL commit — a deliberate, scoped
+exception to filters-live-in-the-URL, since the canonical value is still `q`
+and the buffer holds only what is in flight. And the debounced commits use
+`replace` rather than `push`, because a pause mid-word would otherwise write a
+history entry and the back button would step through fragments of a word.
+Clearing uses `push`, being a deliberate action.
+
+**2026-08-23 — The filter bar collapses to dropdowns below laptop; wording
+stays identical across breakpoints.**
+Eleven buttons across four groups do not fit a phone. Below laptop each of the
+four measurement filters becomes a single dropdown showing its current value,
+four across in one row, each keeping the small uppercase label it has on
+desktop.
+
+The labels were the decision, not the dropdowns. Stripped of "COMPARISON",
+the word "Absolute" is a word with no context to a first-time visitor — the
+value alone reads as a fragment. Keeping the caption costs vertical space and
+buys comprehension, which on a page a recruiter may open cold is the better
+trade.
+
+Option wording stays byte-identical to desktop: "90-day window", not "90d".
+Shortening only on mobile was offered when the labels crowded at 375px and
+declined — one vocabulary is one thing to explain in an interview, and a
+prototype that is slightly tight is better than a prototype that says two
+different things depending on the device. The crowding was fixed with equal
+column widths and a shared label height instead, which is where the fault
+actually was: four buttons each sized to their own text made the row ragged,
+and the ragged row was what made the labels collide.
+
+Desktop keeps the visible-options rows. Two layouts rather than one was
+considered a cost and accepted: seeing all three metrics at once is genuinely
+better when there is room, and the desktop version was already built and
+working.
+
+The implementation constraint that mattered is one piece of state holding which
+panel is open, not one boolean per dropdown. Five panels — four filters plus
+Channels — able to be open simultaneously is where this would have broken.
+
+Alongside it, the category page's "<< Back to home" becomes a house icon below
+laptop. It was the longest item in that row and the only one that is not a
+category, so shrinking it both freed the space that got the four category pills
+onto two lines and separated navigation from filtering visually as well as
+functionally.
 
 **2026-08-23 — The homepage built; card counts split by format and breakpoint,
 and one grid bug found twice.**
@@ -1632,3 +1713,29 @@ grid classes the category page uses, which also means a future breakpoint
 change cannot fix one page and silently break the other. Recorded because the
 reasoning was sound and the outcome still wrong — "three items don't need a
 grid" ignored that the grid was also what assigned each card its width.
+
+**Postgres full-text search, and semantic search, for the search bar.**
+Full-text would add word stemming and relevance ranking over the substring
+match actually built — "gravel" would properly find "gravelling", and results
+could be ordered by match quality rather than staying in outlier-score order.
+It needs its own column and its own index, and it still would not know that
+Unbound is a gravel race. Semantic search over embeddings would know that, and
+is weeks of work plus a model and a vector column.
+
+Substring matching is the right level for a prototype, and the reason is
+specific to this dataset rather than general: YouTube titles are keyword-
+stuffed because creators optimise them for search, so literal matching works
+far better on titles than it would on prose. The ceiling is worth being able to
+describe — "it is substring matching, which is honest about what it does;
+semantic search would find Unbound and Traka without the word gravel" is a
+better interview answer than having built something more elaborate that still
+could not do that.
+
+**Shortening the filter labels on mobile.**
+Offered when "COMPARISON" and "CONTENT TYPE" crowded each other at 375px:
+"WINDOW" and "TYPE" would fit comfortably. Declined because it trades away one
+vocabulary across all screen sizes for a fit problem that turned out to have a
+different cause — the four columns were each sized to their own text, and equal
+widths plus a shared label height fixed it without changing a word. Recorded
+because the obvious fix was to the symptom and the actual fault was one layer
+underneath it, which is the third time that pattern has appeared in this file.

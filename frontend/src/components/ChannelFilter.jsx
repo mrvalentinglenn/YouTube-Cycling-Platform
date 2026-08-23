@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { resolveFilters } from '../lib/filters'
 
@@ -16,35 +16,15 @@ const CATEGORY_LABELS = {
 // channels are on by default and the URL carries only the exclusions, so a
 // bare URL stays short — a user switches a handful off at most, not most of
 // them on.
-export default function ChannelFilter({ channels }) {
+// isOpen/onToggle are owned by FilterBar now — one piece of state shared
+// across this dropdown and the four filter dropdowns, so opening any of them
+// closes whatever else was open. Click-outside and Escape are handled once,
+// at the FilterBar level, for the same reason.
+export default function ChannelFilter({ channels, isOpen, onToggle }) {
   const [searchParams, setSearchParams] = useSearchParams()
   const excludedIds = resolveFilters(searchParams).exclude
 
-  const [isOpen, setIsOpen] = useState(false)
   const [searchText, setSearchText] = useState('')
-  const containerRef = useRef(null)
-
-  // Click outside or Escape closes the dropdown. Only listens while open,
-  // so this isn't doing anything on every render of the rest of the app.
-  useEffect(() => {
-    if (!isOpen) return undefined
-
-    function handlePointerDown(event) {
-      if (containerRef.current && !containerRef.current.contains(event.target)) {
-        setIsOpen(false)
-      }
-    }
-    function handleKeyDown(event) {
-      if (event.key === 'Escape') setIsOpen(false)
-    }
-
-    document.addEventListener('mousedown', handlePointerDown)
-    document.addEventListener('keydown', handleKeyDown)
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown)
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [isOpen])
 
   function writeExclusions(nextExcludedIds) {
     const next = new URLSearchParams(searchParams)
@@ -85,11 +65,11 @@ export default function ChannelFilter({ channels }) {
   }, [channels, searchText])
 
   return (
-    <div ref={containerRef} className="flex flex-wrap items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <div className="relative">
         <button
           type="button"
-          onClick={() => setIsOpen((open) => !open)}
+          onClick={onToggle}
           className="rounded border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-300 hover:text-neutral-100"
         >
           Channels

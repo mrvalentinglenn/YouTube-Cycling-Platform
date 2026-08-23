@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import FilterBar from '../components/FilterBar'
+import SiteHeader from '../components/SiteHeader'
 import VideoCard from '../components/VideoCard'
 import {
   CATEGORIES,
@@ -11,6 +12,19 @@ import {
   serializeCategories,
 } from '../lib/filters'
 import { getCategoryVideos } from '../lib/queries'
+
+// No icon library in this project (checked package.json) — an inline SVG
+// for one icon, matching the stroke style VideoCard's Eye/Comment/Thumb
+// icons already use, rather than adding a dependency.
+function HomeIcon({ className }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={className}>
+      <path d="M3 9.5 12 3l9 6.5" />
+      <path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5" />
+      <path d="M9.5 21v-6h5v6" />
+    </svg>
+  )
+}
 
 export default function CategoryPage({ channels }) {
   const { categories: rawCategories } = useParams()
@@ -57,6 +71,7 @@ export default function CategoryPage({ channels }) {
       format: filters.format,
       page: filters.page,
       exclude: filters.exclude,
+      q: filters.q,
     }).then((result) => {
       if (cancelled) return
       setRows(result.rows)
@@ -69,7 +84,16 @@ export default function CategoryPage({ channels }) {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoriesKey, filters.window, filters.metric, filters.comparison, filters.format, filters.page, excludeKey])
+  }, [
+    categoriesKey,
+    filters.window,
+    filters.metric,
+    filters.comparison,
+    filters.format,
+    filters.page,
+    filters.q,
+    excludeKey,
+  ])
 
   // getPageSize() is the same helper queries.js used for .range() — using
   // anything else here is exactly the divergence that would silently skip
@@ -130,7 +154,13 @@ export default function CategoryPage({ channels }) {
     .join(' + ')
 
   return (
-    <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+    // py-6 matches HomePage's own container — CategoryPage had no vertical
+    // padding before (FilterBar sat flush against the viewport top), which
+    // is fine for a filter bar but not for a page title sitting above it.
+    // Adding it here keeps the two routes' top spacing consistent, without
+    // touching FilterBar itself.
+    <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      <SiteHeader query={query} />
       <FilterBar channels={channels} />
 
       {/* flex-wrap, not horizontal scroll: "Professional Triathletes" and
@@ -138,11 +168,38 @@ export default function CategoryPage({ channels }) {
           a phone, and a scroll gesture hides options nobody knows are
           there. Wrapping keeps every option visible at every width. */}
       <div className="mt-4 flex flex-wrap gap-2">
+        {/* Laptop and up: unchanged text link. */}
         <Link
           to={`/${query ? `?${query}` : ''}`}
-          className="rounded-full border border-neutral-600 px-4 py-1.5 text-sm font-medium text-neutral-300 hover:text-white"
+          className="hidden rounded-full border border-neutral-600 px-4 py-1.5 text-sm font-medium text-neutral-300 hover:text-white lg:inline-block"
         >
           {'<< Back to home'}
+        </Link>
+
+        {/* Below laptop: icon only. `aspect-square` was tried twice and
+            rejected both times — verified empirically, not assumed. It
+            can't derive width from a flex-stretched height (stretch
+            resolves too late in the flex algorithm), and switching off
+            flex entirely still failed: with both width and height
+            unset, the browser sizes each axis independently from its own
+            content instead of transferring one from the other, so the box
+            came out 18×34 either way, never square.
+            What actually matches the pills' 34px height, reliably: the
+            same two ingredients that produce it — py-1.5 (12px) plus
+            text-sm's line-height (20px) plus the 2px border = 34.
+            px-2 is the deliberate horizontal counterpart, not a guess:
+            16px padding + the icon's own 16px (h-4/w-4) + the same 2px
+            border also totals 34, so both axes land on the same number
+            through matching arithmetic rather than through aspect-ratio.
+            If the pills' own py-1.5/text-sm ever changes, this has to be
+            re-derived alongside them — there's no live link between the
+            two. */}
+        <Link
+          to={`/${query ? `?${query}` : ''}`}
+          aria-label="Back to home"
+          className="inline-block rounded-full border border-neutral-600 px-2 py-1.5 text-sm text-neutral-300 hover:text-white lg:hidden"
+        >
+          <HomeIcon className="inline-block h-4 w-4 align-middle" />
         </Link>
 
         {CATEGORIES.map((category) => {
@@ -172,8 +229,12 @@ export default function CategoryPage({ channels }) {
 
       {/* Zero rows is expected right now — the 7-day window has no arm in
           scoring_view yet — and must read as an empty window, not a
-          broken page. */}
-      {!loading && !error && rows.length === 0 && <p>No videos found.</p>}
+          broken page. A search returning nothing gets its own wording:
+          otherwise a user can't tell "your search matched nothing" from
+          "this window has no data yet" from the same generic line. */}
+      {!loading && !error && rows.length === 0 && (
+        <p>{filters.q ? `No videos match "${filters.q}".` : 'No videos found.'}</p>
+      )}
 
       {!loading && !error && rows.length > 0 && (
         <div className={`grid gap-4 ${gridColumnsClassName}`}>

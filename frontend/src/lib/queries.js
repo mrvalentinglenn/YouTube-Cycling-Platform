@@ -27,6 +27,16 @@ const SELECT_COLUMNS = [
   'baseline_video_count',
 ].join(', ')
 
+// ilike treats %, _ and \ as pattern characters, not literal text — a user
+// typing "50%" without this would search for "50" followed by anything,
+// not the literal string "50%". Escaping them makes the match do what the
+// user typed. Not a security fix (supabase-js parameterises the query
+// itself, so there's no injection risk either way) — just a correctness
+// one for what the pattern actually means.
+function escapeIlikePattern(value) {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
+}
+
 // The one query the front end makes so far. `format` is not a column on
 // scoring_view — it maps to is_short (longform = false, shorts = true) —
 // so the mapping happens here rather than being pushed onto callers.
@@ -41,6 +51,7 @@ export async function getCategoryVideos({
   format,
   page,
   exclude = [],
+  q = '',
   pageSize: pageSizeOverride,
 }) {
   const isShort = format === 'shorts'
@@ -92,6 +103,16 @@ export async function getCategoryVideos({
   // entirely when nothing is excluded, per CLAUDE.md.
   if (exclude.length > 0) {
     queryBuilder = queryBuilder.not('channel_id', 'in', `(${exclude.join(',')})`)
+  }
+
+  // Titles aren't indexed for a substring match and never can be, so this
+  // scans. Measured directly against Supabase as anon — four categories,
+  // long-form, 90-day window, a broad term matching 2,288 of the rows in
+  // scope: ~430ms cold, ~110ms on repeat runs. Comfortably inside the 3s
+  // anon statement_timeout. Skipped entirely when empty: an ilike on '%%'
+  // would match every row for no reason to.
+  if (q) {
+    queryBuilder = queryBuilder.ilike('title', `%${escapeIlikePattern(q)}%`)
   }
 
   const { data, error, count } = await queryBuilder

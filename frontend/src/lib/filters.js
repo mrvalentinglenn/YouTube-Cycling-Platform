@@ -14,6 +14,7 @@ export const DEFAULT_FILTERS = {
   format: 'longform',
   page: '1',
   exclude: [],
+  q: '',
 }
 
 // Takes the URLSearchParams for the current page and returns every filter
