@@ -215,6 +215,13 @@ def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapsh
     if not uploads_playlist_id:
         raise CollectionError("channel has no uploads playlist (likely terminated or empty)")
 
+    # Already in this response — channels().list() above requests
+    # "snippet" for exactly this reason, so no second API call is spent on
+    # it. Channel avatars only ever come in default/medium/high (never the
+    # larger video-thumbnail sizes), and best_thumbnail_url already falls
+    # through to whichever of those is actually present.
+    avatar_url = best_thumbnail_url(channel.get("snippet", {}).get("thumbnails", {}))
+
     # --- Step 2: walk the uploads playlist, page by page, with an early stop ---
     # The uploads playlist is ordered newest-first. That ordering is what
     # makes an early stop correct: the moment one video falls outside the
@@ -292,6 +299,7 @@ def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapsh
             "head_checks_made": 0,
             "head_check_fallbacks": 0,
             "head_check_reclassified": 0,
+            "avatar_url": avatar_url,
         }
 
     # --- Step 3: fetch full video details, batched -------------------
@@ -457,6 +465,7 @@ def collect_channel(channel_id, channel_name, resolved_mode, window_days, snapsh
         "head_checks_made": head_checks_made,
         "head_check_fallbacks": head_check_fallbacks,
         "head_check_reclassified": head_check_reclassified,
+        "avatar_url": avatar_url,
     }
 
 
@@ -710,6 +719,14 @@ def main():
     total_head_check_fallbacks = 0
     total_head_check_reclassified = 0
     check_messages = []
+    # (channel_id, avatar_url) pairs collected during the loop below and
+    # written back to `channels` afterwards, one .update() per channel —
+    # see the write-back loop after the channel loop for why update rather
+    # than upsert. Both initialized here (not just inside the try block)
+    # so the summary in `finally` has something to print even if an
+    # exception strikes before the write-back loop is reached.
+    avatar_updates = []
+    avatar_updates_written = 0
 
     try:
         # The channel list is data, never a hardcoded list — adding a
@@ -753,6 +770,10 @@ def main():
                 continue
 
             channels_succeeded += 1
+            if stats["avatar_url"]:
+                avatar_updates.append((channel_id, stats["avatar_url"]))
+            else:
+                print(f"{channel_name}: skipped avatar_url — no thumbnails in channel response")
             total_videos_found += stats["videos_found"]
             total_videos_inserted += stats["videos_inserted"]
             total_snapshots_written += stats["snapshots_written"]
@@ -766,6 +787,22 @@ def main():
                 f"{stats['videos_inserted']} new in videos, "
                 f"{stats['pages_fetched']} page(s) fetched"
             )
+
+        # Written back one channel at a time with update(), not upsert:
+        # channels.name and channels.category are NOT NULL, so an upsert
+        # carrying only channel_id and avatar_url would fail the moment it
+        # tried to insert a row rather than match one. update() on a
+        # channel_id that doesn't exist affects zero rows and raises
+        # nothing — the outcome we want here — and a single channel's
+        # failed write is logged and skipped rather than aborting the run,
+        # since this is separate from (and must not affect) the three
+        # fail-loudly checks below.
+        for cid, url in avatar_updates:
+            try:
+                supabase.table("channels").update({"avatar_url": url}).eq("channel_id", cid).execute()
+                avatar_updates_written += 1
+            except Exception as e:
+                print(f"Failed to write avatar_url for {cid}: {e}")
 
         check_messages, check_failures = run_checks(
             channels_read,
@@ -830,6 +867,7 @@ def main():
         print(f"Shorts HEAD checks made: {total_head_checks_made}")
         print(f"HEAD check fallbacks (used duration heuristic): {total_head_check_fallbacks}")
         print(f"Videos reclassified by HEAD check: {total_head_check_reclassified}")
+        print(f"Channel avatars written: {avatar_updates_written}/{len(avatar_updates)} attempted")
         print(f"API calls made: {api_calls}")
         print(f"Quota units used: {quota_units}")
         print(f"Duration: {duration_seconds:.1f}s")
