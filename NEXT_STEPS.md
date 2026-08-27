@@ -50,15 +50,7 @@ verified in the browser. Tailwind v4 is installed. What remains:
 2. [ ] Choose a static host and deploy. Whichever it is, configure route
        rewriting to `index.html` or a direct link to `/category/teams`
        returns 404.
-5. [ ] Measure whether `count: 'exact'` is now fast enough on four categories
-        to keep "Page X of Y". It was never re-measured after materialising —
-        we went straight past the question. If it is slow, the fallback is a
-        `pageSize + 1` has-more check and a "Page 3" / Next-disabled UI. See
-        DECISIONS Rejected.
-6. [ ] Drop `scoring_view_live`'s dead weight if the 7-day arm changes its
-        shape — no action now, just a reminder that the arm gets added inside
-        `scoring_view_live`, not inside the materialised view, and the next
-        refresh picks it up.       
+
 
 ---
 

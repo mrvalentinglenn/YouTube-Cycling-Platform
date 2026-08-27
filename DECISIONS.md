@@ -13,6 +13,21 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 *Last updated: 2026-08-27*
 
+**2026-08-27 — `count: 'exact'` measured after materialising; the exact row
+count stays.**
+Left open when the materialised view landed — the count was never
+re-measured, and the `pageSize + 1` has-more fallback was parked on the
+assumption it might still be needed. Measured now, against 12,438 rows with
+both arms live: 0.875 ms, an index-only scan on
+`scoring_view_value_idx` with zero heap fetches, against `anon`'s 3-second
+budget.
+
+"Page X of Y" stays. The fallback stays parked and is now recorded as
+unnecessary rather than pending. Worth noting the plan rather than only the
+number: the count is answered entirely from the index, on the leading
+`(is_short, "window")` columns, which is the index shape the 2026-08-23
+decision chose deliberately and the reason `category` was left out of it.
+
 **2026-08-27 — "BikeTube" dropped; the product is named plainly and set in
 a neutral mark.**
 The name was a pun on the inner tube, with a yellow wordmark and a tagline
