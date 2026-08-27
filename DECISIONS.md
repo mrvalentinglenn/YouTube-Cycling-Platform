@@ -13,6 +13,36 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 *Last updated: 2026-08-27*
 
+**2026-08-27 — "BikeTube" dropped; the product is named plainly and set in
+a neutral mark.**
+The name was a pun on the inner tube, with a yellow wordmark and a tagline
+beside it. Replaced by "CYCLING CONTENT TRACKER" alone — one element, caps,
+neutral weight, no accent colour, identical at every breakpoint.
+
+The reason is about audience rather than taste. This is shown to companies
+as a work sample, and a demo carrying its own branding competes visually
+with the brand of whoever is looking at it. A plain descriptive mark gets
+out of the way and lets the product be the thing on screen. The name also
+stopped doing any work once it was clear nobody would ever use this
+conversationally.
+
+Retires a standing item outright rather than deferring it: YouTube's brand
+guidelines ask that third-party names not incorporate "Tube", which was
+parked as a pre-publication concern. There is now nothing to review.
+
+Two knock-on effects. Yellow is freed up — it already meant "this category
+is selected" on the category page's button row, and a colour meaning two
+things on one product is worse than a duller wordmark. And the caps are set
+in CSS with `uppercase` while the JSX carries sentence case, so the rendered
+text and the readable source stay separate and a future casing change is a
+class rather than a retyped string.
+
+Considered keeping a second descriptive line beneath — "YouTube performance
+in cycling and triathlon" — since the header is the only place the product
+explains itself, there being no page heading above the sections. Declined in
+favour of the single element, which is the more consistent reading of the
+neutrality argument.
+
 **Collection is unattended and has been through a full week.** Daily runs
 fire on their own; the first real Monday, 24 August, recorded
 `mode = 'weekly'` with 1,370 rows across 40 channels in 18 minutes, and

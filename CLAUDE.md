@@ -496,12 +496,12 @@ not see directly.
 
 ## Prototype features — must have
 
-**Name: BikeTube — Cycling Content Tracker.** Wordmark left-aligned to the
-content column at the top of both routes, with the tagline as secondary text.
-The pun is on the inner tube. Note for the pre-publication review: YouTube's
-brand guidelines ask that third-party names not incorporate "Tube", which is
-irrelevant for a local prototype and relevant the moment this sits at a public
-URL — same review as the API Terms item.
+**Name: Cycling Content Tracker.** A single text mark, set in caps, neutral
+weight, no colour accent, left-aligned to the content column at the top of
+both routes. Identical at every breakpoint — nothing hides or shortens it.
+Deliberately plain: this is shown to companies as a work sample, and a
+product with its own branding competes visually with the brand of whoever
+is looking at it. Neutral is the feature.
 
 **Single page, no accounts** and no login — everything is public and
 read-only. Layout reference: `preview.png` in the project folder — with two

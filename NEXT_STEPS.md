@@ -65,8 +65,6 @@ verified in the browser. Tailwind v4 is installed. What remains:
 ## Small things, whenever
 
 
-- [ ] Write a README.
-
 - [ ] One video's is_short was never rewritten by
       scripts/fix_shorts_classification.py — a connection reset during the
       correction run. Which row is unknown; it was not identified by
