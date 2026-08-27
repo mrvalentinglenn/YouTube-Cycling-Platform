@@ -490,31 +490,6 @@ Any combination is valid — 24 in total. Example: 7-day + likes + relative +
 long-form ranks long-form videos by how far their day-7 likes exceeded the
 channel's median day-7 likes, among videos that reached day 7 in the last month.
 
-**Postgres full-text search, and semantic search, for the search bar.**
-Full-text would add word stemming and relevance ranking over the substring
-match actually built — "gravel" would properly find "gravelling", and results
-could be ordered by match quality rather than staying in outlier-score order.
-It needs its own column and its own index, and it still would not know that
-Unbound is a gravel race. Semantic search over embeddings would know that, and
-is weeks of work plus a model and a vector column.
-
-Substring matching is the right level for a prototype, and the reason is
-specific to this dataset rather than general: YouTube titles are keyword-
-stuffed because creators optimise them for search, so literal matching works
-far better on titles than it would on prose. The ceiling is worth being able to
-describe — "it is substring matching, which is honest about what it does;
-semantic search would find Unbound and Traka without the word gravel" is a
-better interview answer than having built something more elaborate that still
-could not do that.
-
-**Shortening the filter labels on mobile.**
-Offered when "COMPARISON" and "CONTENT TYPE" crowded each other at 375px:
-"WINDOW" and "TYPE" would fit comfortably. Declined because it trades away one
-vocabulary across all screen sizes for a fit problem that turned out to have a
-different cause — the four columns were each sized to their own text, and equal
-widths plus a shared label height fixed it without changing a word. Recorded
-because the obvious fix was to the symptom and the actual fault was one layer
-underneath it, which is the third time that pattern has appeared in this file.
 
 **Format filter is not optional.** Shorts and long-form sit on entirely
 different view scales. Without the split, Shorts dominate every absolute
