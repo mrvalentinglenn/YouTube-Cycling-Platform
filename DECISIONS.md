@@ -49,6 +49,48 @@ fix.
 
 ## Decisions
 
+**2026-08-27 — YouTube API Terms reviewed; three conflicts found, accepted
+for a prototype that stays off a public URL.**
+Closes the standing NEXT_STEPS item. Everything collected here is
+Non-Authorized Data — an API key, public videos, no user credentials — which
+is the category the strictest rules apply to.
+
+The thumbnail question was already closed and the review confirmed it:
+thumbnails link back to the video on YouTube, which is what the terms ask.
+
+Three conflicts, in ascending order of how much they matter.
+
+*Aggregation.* API Data may only be aggregated across channels under a
+single content owner. This product aggregates 40 independent channels by
+design; that is the concept, not an implementation detail.
+
+*Retention.* Non-Authorized statistics must be deleted or refreshed within
+30 days. `video_snapshots` only grows, deliberately — and refreshing is not
+available as a remedy, because the API holds no history and a day-7 reading
+cannot be re-fetched later. The property that makes this data worth
+collecting is the property the rule restricts.
+
+*Derived metrics.* The one nobody had flagged, and the one that matters.
+Clients must not use API Data to create derived metrics, and the policy's
+own example names a score factoring in views and likes. That is the Outlier
+Score, described almost exactly — the headline feature and the thing the
+locked scoring spec was built around.
+
+A sanctioned path exists as of June 2026: an API Compliance Audit with the
+Analytics & Reporting use case, which permits custom scores and extended
+statistical storage for accepted applicants. Not pursued now. The prototype
+stays local, demoed by screen share rather than a public link, which removes
+the user-facing requirements (privacy policy, Terms link, branding
+attribution) entirely. Retention and derived metrics still bind regardless
+of audience — accepted knowingly. Realistic exposure is quota reduction on
+an API project using ~120 of 10,000 daily units.
+
+The audit becomes the right move the moment this is adopted internally by a
+company, because that is a commercial entity using it operationally and
+there would be a named use case to put on the form. Recorded in full rather
+than summarised as "reviewed, fine", because finding your own headline
+feature in a policy's prohibited examples is worth being able to describe.
+
 **2026-08-27 — Avatar images 429 rather than fail; measured before building
 anything.**
 Avatars vanished from most cards. Two diagnoses were reached and both were
@@ -1877,3 +1919,23 @@ upload step in `collect.py`, and refresh logic for when a channel changes
 its avatar is a session's work against a fault that does not affect anyone
 who loads the page once. Remains the right fix if it ever recurs on a
 visitor's first load. See the 2026-08-27 decision.
+
+**Filter bar icons from `preview.png`.**
+The mockup put a small icon above each of the four filter labels, and the
+item sat on NEXT_STEPS from the start as the most droppable thing on it.
+Dropped. The labels — TIME WINDOW, METRIC, COMPARISON, CONTENT TYPE —
+already say what each control is, so an icon above them is decoration
+carrying no information the caption does not.
+
+It also runs against a rule the filter bar already established. The
+2026-08-23 decision kept full-length captions at every breakpoint on the
+grounds that the caption is what makes a value like "Absolute" mean
+something to a first-time visitor. If the words are doing that work, an icon
+is not adding a second channel of meaning, it is adding a second thing to
+look at above an already-dense row of four controls at 375px.
+
+Consistent with the earlier rejection of emoji in the homepage section
+headings, and for the same reason: the page does not need a second visual
+vocabulary. Recorded rather than silently dropped because the mockup is the
+design reference for this build, and a deliberate departure from it should
+be findable later.

@@ -64,28 +64,20 @@ verified in the browser. Tailwind v4 is installed. What remains:
 
 ## Small things, whenever
 
-- [ ] Add a root `.env.example` for the collection job — four variable names,
-      no values, committed. Note that `HEALTHCHECKS_URL` is deliberately
-      absent from the local `.env`: a manual test run must not be able to
-      silence an alarm about the scheduled job failing to run. The front end
-      already has its own at `frontend/.env.example`, with
-      `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`. The two stay
-      separate — the secret key must never sit in the same file as anything
-      the browser reads.
+
 - [ ] Write a README.
-- [ ] Review YouTube's API Services Terms on data retention and thumbnail
-      display, before anything goes to a public URL.
-- [ ] Re-run `scripts/fix_shorts_classification.py` at some point to pick up the
-      one video that failed on a connection reset. One row; no hurry.
+
+- [ ] One video's is_short was never rewritten by
+      scripts/fix_shorts_classification.py — a connection reset during the
+      correction run. Which row is unknown; it was not identified by
+      spot-checking the shortest long-form videos on 27 August, all of
+      which were correctly classified. One row in ~4,000, and daily
+      collection does not revisit it. Re-run the script when convenient,
+      after checking it still works — it predates collect.py gaining its
+      own HEAD check.
 - [ ] Red Bull Bike returns 6 long-form baseline videos against ~18 visible on
       the channel. Cause is understood and not a bug — see DECISIONS. No action
       unless it is still thin in a month.
-      - [ ] Filter bar icons from `preview.png`. The most droppable item on this
-      list — four small icons above labels that already say what they are. Cut
-      this before cutting anything else.
-- [ ] The name "BikeTube" incorporates "Tube", which YouTube's brand guidelines
-      ask third parties not to do. Irrelevant locally, relevant at a public
-      URL. Fold into the same pre-publication review as the API Terms item.
 - [ ] Avatars can 429 from `yt3.ggpht.com` under heavy reloading. Measured
       27 August: after a 20-minute pause, a cold incognito load returned all
       40. Development traffic, not structural — no action. If it ever

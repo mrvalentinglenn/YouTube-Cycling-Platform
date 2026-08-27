@@ -503,8 +503,11 @@ brand guidelines ask that third-party names not incorporate "Tube", which is
 irrelevant for a local prototype and relevant the moment this sits at a public
 URL — same review as the API Terms item.
 
-**Single page, no accounts** and no login — everything is public and read-only.
-Layout reference: `preview.png` in the project folder.
+**Single page, no accounts** and no login — everything is public and
+read-only. Layout reference: `preview.png` in the project folder — with two
+deliberate departures. The filter bar's icons are not built (see DECISIONS,
+Rejected), and the mockup was drawn under Absolute so it shows no Outlier
+Score badge.
 
 **Filter bar, fixed at the top.** Four independent filters:
 
