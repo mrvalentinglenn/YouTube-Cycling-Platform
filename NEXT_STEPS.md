@@ -14,18 +14,11 @@ only on full success. The backfill has run: 3,946 videos across 40 channels.
 
 Collection is live. Nothing further is required to keep it running.
 
-**Two things to check on tomorrow, 24 August — the first run to exercise both:**
 
-- [ ] `mode = 'weekly'` and ~400 rows rather than ~134. That is the
-      date-derived window working; it has never fired on a real Monday.
-- [ ] The refresh call landed. `refresh_scoring_view()` is new and has never
-      run inside a scheduled job. A failure marks the run failed and
-      suppresses the Healthchecks ping, so silence is the signal — but check
-      `job_runs` for the run's status either way.
 
 ---
 
-## The scoring view — 90-day arm done, materialised
+## The scoring view — both arms done, materialised
 
 `sql/scoring_view.sql` holds two objects: `scoring_view_live` (the query, tall
 shape, `security_invoker = true`, no ORDER BY) and `scoring_view` (the
@@ -39,16 +32,9 @@ A median of 1.04 is the baseline calibrating correctly.
 
 **Still to do:**
 
-1. [ ] Add the 7-day arm as a second `union all` block. Not possible until
-       day-7 readings exist — collection began 19/20 August, so the first
-       videos reach day 7 around 26–27 August. Check for rows before
-       building: a video needs a snapshot dated exactly 7 days after its
-       `published_at`.
-2. [ ] Mirror `scoring_view.sql` into `sql/schema.sql` now the numbers are
+
+1. [ ] Mirror `scoring_view.sql` into `sql/schema.sql` now the numbers are
        trusted, so the schema file is a complete description of the database.
-3. [ ] Spot-check the Provisional label against channels you know: Matt
-       Hauser has no Shorts at all, so his Shorts rows should come back with a
-       null score and `is_provisional = true`.
 
 ---
 
@@ -58,16 +44,10 @@ Scaffold, data layer, filter bar, video card and category grid are built and
 verified in the browser. Tailwind v4 is installed. What remains:
 
 
-1. [ ] Verify the Provisional label appears where it should. Matt Hauser has
-       no Shorts, so his Shorts rows should come back with a null score and
-       `is_provisional = true`. Easiest route: filter `scoring_view` on
-       `is_provisional = true` in the Supabase table editor, then find those
-       videos in the front end.
-2. [ ] Revert the `window` default from `90d` to `7d` once the 7-day arm is
-       live. One line in `frontend/src/lib/filters.js`.
-3. [ ] Replace Vite's default `frontend/README.md` with something
+
+1. [ ] Replace Vite's default `frontend/README.md` with something
        project-specific.
-4. [ ] Choose a static host and deploy. Whichever it is, configure route
+2. [ ] Choose a static host and deploy. Whichever it is, configure route
        rewriting to `index.html` or a direct link to `/category/teams`
        returns 404.
 5. [ ] Measure whether `count: 'exact'` is now fast enough on four categories
@@ -106,6 +86,12 @@ verified in the browser. Tailwind v4 is installed. What remains:
 - [ ] The name "BikeTube" incorporates "Tube", which YouTube's brand guidelines
       ask third parties not to do. Irrelevant locally, relevant at a public
       URL. Fold into the same pre-publication review as the API Terms item.
+- [ ] Avatars can 429 from `yt3.ggpht.com` under heavy reloading. Measured
+      27 August: after a 20-minute pause, a cold incognito load returned all
+      40. Development traffic, not structural — no action. If it ever
+      recurs on a page a visitor loaded once, the fix is a Supabase storage
+      bucket holding the 40 images, which would also settle the parked
+      YouTube Terms question on thumbnail handling.    
 
 ---
 

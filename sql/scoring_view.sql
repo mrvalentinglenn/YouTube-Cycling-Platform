@@ -40,12 +40,15 @@
 -- scoring_view_live; the materialised view is a stored copy of it, not a
 -- second implementation that could drift from it.
 --
--- SHAPE. Tall: one row per video, per window, per metric. Only the 90-day
--- window exists yet, so today every video produces 3 rows (views, likes,
--- comments). The view is written as ONE parenthesised block per window,
--- unioned together, specifically so the 7-day window can be added later by
--- appending a second block with `union all` rather than restructuring this
--- one. See the comment marking where that block goes.
+-- SHAPE. Tall: one row per video, per window, per metric. Two arms exist
+-- now, 90-day and 7-day, each its own parenthesised block joined with
+-- `union all` — written that way from the start specifically so the second
+-- arm could be added by appending a block rather than restructuring the
+-- first one. A video with a day-7 reading inside the 7-day arm's 30-day
+-- pool window produces 6 rows (3 metrics x 2 windows); a video without one
+-- — no snapshot dated exactly 7 days after its published_at, or one older
+-- than 30 days — still produces 3 (90-day only, since every video has a
+-- latest snapshot to read that arm's numerator from).
 --
 -- "window" is a reserved SQL keyword (it's also the name of a real SQL
 -- feature, window functions), so every use of it as a column name below —
@@ -70,6 +73,13 @@
 -- types. This rewrite keeps both identical, but DROP + CREATE is used
 -- anyway so a future change that does alter them doesn't fail confusingly
 -- on a stale view definition.
+-- Drop order matters: scoring_view is defined as `select * from
+-- scoring_view_live`, so Postgres refuses to drop the view while the
+-- materialised view depends on it. The dependent object goes first.
+-- The duplicate `drop materialized view` further down is harmless
+-- (IF EXISTS) and stays where it is, next to the CREATE it belongs to.
+drop materialized view if exists scoring_view;
+
 drop view if exists scoring_view_live;
 
 create or replace view scoring_view_live
@@ -275,26 +285,217 @@ with (security_invoker = true) as
       limit 15
     ) pool15
   ) b on true
-);
+)
+
+union all
 
 -- ================================================================
--- 7-day window arm — not built yet. When the 7-day snapshot exists to
--- read from, add it here as:
---
---   union all
---
---   (
---     with numerator as (...), metrics as (...), ranked as (...),
---          pools as (...)
---     select ... '7d' as "window", ...
---     from videos v ...
---   )
---
--- same column shape, same precomputed-pool pattern. Once added, refresh
--- the materialised view (below) picks up the new arm automatically on its
--- next run — nothing about materialising this changes how that addition
--- works.
+-- 7-day window arm
 -- ================================================================
+(
+  with numerator as (
+    -- The figure this window scores each video on: the snapshot taken
+    -- exactly 7 days after publication, not the latest one — a day-7
+    -- reading is frozen the moment it's taken, which is the entire point
+    -- of collecting daily (see CLAUDE.md "Why daily"). Date subtraction
+    -- only, same as everywhere else age is measured in this project.
+    --
+    -- The composite primary key on (video_id, snapshot_date) means at
+    -- most one row can satisfy "exactly 7 days after published_at", so no
+    -- DISTINCT ON is needed here the way the 90-day arm's numerator needs
+    -- one. A video with no such row (missed day 7, or hasn't reached it
+    -- yet) simply produces no row from this join — correct, not an error:
+    -- it has no day-7 score to show.
+    --
+    -- snapshot_date is carried here (unlike the 90-day arm's numerator)
+    -- because the final SELECT's pool-window filter needs it — see the
+    -- comment down there for why that filter is NOT up here instead.
+    select
+      s.video_id,
+      s.views,
+      s.likes,
+      s.comments,
+      s.snapshot_date
+    from video_snapshots s
+    join videos v on v.video_id = s.video_id
+    where s.snapshot_date - v.published_at::date = 7
+  ),
+
+  display as (
+    -- Title and thumbnail_url do NOT come from the day-7 snapshot above —
+    -- they come from the latest one, via the same DISTINCT ON pattern the
+    -- 90-day arm's numerator uses. The day-7 numbers are deliberately
+    -- frozen; the title and thumbnail are not supposed to be. Creators
+    -- edit both after publishing, and reading them from the day-7 row
+    -- would mean the same video shows a different, stale thumbnail under
+    -- the 7-day window than under the 90-day one — reads as a bug, not as
+    -- a feature of the freeze.
+    select distinct on (video_id)
+      video_id,
+      title,
+      thumbnail_url
+    from video_snapshots
+    order by video_id, snapshot_date desc
+  ),
+
+  metrics as (
+    -- Unpivot, identical in shape to the 90-day arm's metrics CTE — see
+    -- its comments for why COALESCE and the numeric cast are there.
+    select
+      mv.video_id,
+      mv.channel_id,
+      mv.is_short,
+      mv.published_at,
+      'views' as metric,
+      n.views::numeric as value
+    from numerator n
+    join videos mv on mv.video_id = n.video_id
+    union all
+    select
+      mv.video_id,
+      mv.channel_id,
+      mv.is_short,
+      mv.published_at,
+      'likes' as metric,
+      coalesce(n.likes, 0)::numeric as value
+    from numerator n
+    join videos mv on mv.video_id = n.video_id
+    union all
+    select
+      mv.video_id,
+      mv.channel_id,
+      mv.is_short,
+      mv.published_at,
+      'comments' as metric,
+      coalesce(n.comments, 0)::numeric as value
+    from numerator n
+    join videos mv on mv.video_id = n.video_id
+  ),
+
+  ranked as (
+    -- Every video eligible to appear in ANY baseline pool, numbered from
+    -- most recent (1) to oldest within each channel + format + metric
+    -- group — same mechanism as the 90-day arm's ranked CTE, but
+    -- deliberately WITHOUT its 30-day floor:
+    --
+    --   where published_at >= now() - interval '24 months'
+    --
+    -- Not a copy-paste omission. The 90-day arm's floor exists because
+    -- its lifetime-proxy numerator hasn't finished accumulating views on
+    -- a video younger than 30 days — including one would drag that
+    -- channel's median down. A day-7 reading has no such problem: it's
+    -- frozen at exactly 7 days old the moment it's taken, so it's equally
+    -- valid as a baseline reference regardless of how old the video is
+    -- today. Adding the 30-day floor here would silently shrink every
+    -- baseline pool for no reason tied to data validity — the arms are
+    -- NOT supposed to match on this point. See DECISIONS.md 2026-08-19,
+    -- "The 30-day baseline floor applies to the 90-day window only."
+    select
+      video_id,
+      channel_id,
+      is_short,
+      published_at,
+      metric,
+      value,
+      row_number() over (
+        partition by channel_id, is_short, metric
+        order by published_at desc
+      ) as rn
+    from metrics
+    where published_at >= now() - interval '24 months'
+  ),
+
+  pools as (
+    -- Sixteen-candidate pooling, identical mechanism to the 90-day arm's
+    -- pools CTE — see its comments for why 16 and not 15.
+    select
+      channel_id,
+      is_short,
+      metric,
+      array_agg(video_id order by published_at desc) as pool_video_ids,
+      array_agg(value order by published_at desc) as pool_values
+    from ranked
+    where rn <= 16
+    group by channel_id, is_short, metric
+  )
+
+  select
+    v.video_id,
+    v.channel_id,
+    c.name as channel_name,
+    c.avatar_url,
+    c.category,
+    d.title,
+    d.thumbnail_url,
+    v.duration_seconds,
+    v.is_short,
+    v.published_at,
+    n.views,
+    n.likes,
+    n.comments,
+    '7d' as "window",
+    m.metric,
+    m.value,
+    b.baseline_median,
+    -- NULL, never 0 and never an error, when there's no valid baseline —
+    -- same reasoning as the 90-day arm.
+    case
+      when b.baseline_median is null or b.baseline_median = 0 then null
+      else m.value / b.baseline_median
+    end as outlier_score,
+    -- count(*) from an aggregate with no GROUP BY always returns a row
+    -- (0 if the pool was empty, never NULL), so no COALESCE is needed here.
+    b.baseline_video_count < 10 as is_provisional,
+    b.baseline_video_count
+  from videos v
+  join channels c on c.channel_id = v.channel_id
+  join numerator n on n.video_id = v.video_id
+  join display d on d.video_id = v.video_id
+  join metrics m on m.video_id = v.video_id
+  -- One lookup per video into the precomputed pool for its own
+  -- channel + format + metric — same mechanism as the 90-day arm.
+  left join pools p
+    on p.channel_id = v.channel_id
+    and p.is_short = v.is_short
+    and p.metric = m.metric
+  -- LATERAL baseline join, identical to the 90-day arm's — see its
+  -- comments for why this is cheap (unnesting two short arrays already
+  -- sitting in `p`) rather than a re-scan.
+  left join lateral (
+    select
+      percentile_cont(0.5) within group (order by pool15.pool_value) as baseline_median,
+      count(*) as baseline_video_count
+    from (
+      select pv.pool_value
+      from unnest(p.pool_video_ids, p.pool_values)
+        with ordinality as pv(pool_video_id, pool_value, ord)
+      where pv.pool_video_id <> v.video_id
+      order by pv.ord
+      limit 15
+    ) pool15
+  ) b on true
+  -- Which videos APPEAR in the 7-day list: a day-7 reading taken within
+  -- the last 30 days. This is a DIFFERENT 30-day rule from the one the
+  -- ranked CTE above deliberately does NOT have, and the two must not be
+  -- confused or merged:
+  --   - up there: which videos are eligible to sit in a baseline POOL —
+  --     no floor, any day-7 reading within 24 months qualifies.
+  --   - down here: which videos are eligible to APPEAR as a scored row —
+  --     only ones whose day-7 reading happened in the last 30 days.
+  -- This filter belongs here, on the final SELECT, and must NOT move into
+  -- the numerator CTE. Moving it there would apply the same 30-day
+  -- recency rule to the baseline pools as well, collapsing both concepts
+  -- into one — every channel's median would then be computed from
+  -- whichever handful of videos happened to reach day 7 in the last
+  -- month, with no error raised and a perfectly plausible-looking number
+  -- printed. Right now, with collection only just past a month old, every
+  -- day-7 reading in the database IS inside the last 30 days, so both
+  -- placements happen to return identical rows today — the difference is
+  -- real but invisible until the pool of day-7 readings outgrows 30 days,
+  -- which is exactly why it's called out here rather than left to be
+  -- rediscovered later.
+  where n.snapshot_date >= current_date - interval '30 days'
+);
 
 -- ================================================================
 -- No ORDER BY on the view deliberately.
@@ -358,9 +559,9 @@ select * from scoring_view_live;
 -- to index.
 --
 -- All three lead with the columns the front end always filters on with
--- .eq(): is_short and metric (window too, once a second arm exists — it's
--- included now for forward compatibility even though every row currently
--- shares the one value '90d'). category is deliberately NOT an index
+-- .eq(): is_short, "window" and metric. "window" now genuinely narrows —
+-- both arms exist, so a 7-day query skips the 90-day rows outright
+-- instead of matching everything. category is deliberately NOT an index
 -- column: with only four possible values it barely narrows anything, and
 -- leaving it out lets Postgres apply .in('category', [...]) as a filter
 -- while walking an index that is already in the right sort order — for a

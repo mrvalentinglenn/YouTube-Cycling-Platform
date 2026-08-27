@@ -258,7 +258,7 @@ headline metric permanently, because the API holds no history.
 
 **Why Monday still sweeps 90 days.** The 8-day window alone would mean a video
 is never measured again after day 8, losing the growth curve and view velocity
-entirely. Monday is also where `channels.avatar_url` is refreshed.
+entirely. 
 
 **Worked example.** Video published Wednesday 26 August:
 
@@ -315,7 +315,36 @@ Outlier Score = the video's figure / that channel's baseline median
 (both measured at the same age — see the window table below)
 ```
 
-**7-day window:** views at day 7 / the channel's median day-7 views.
+**7-day window:** the video's figure at day 7 / the median day-7 figure of
+that channel's other videos. The numerator is the snapshot dated exactly 7
+days after `published_at` — date subtraction, one row guaranteed by the
+composite primary key, and a video with no such row simply does not appear
+in this window.
+
+Two things differ from the 90-day arm deliberately, and both look like
+copy-paste omissions if the reasoning is not stated:
+
+*No 30-day floor on the baseline.* The 90-day arm floors its baseline at 30
+days because its lifetime proxy has not finished accumulating on a young
+video. A day-7 reading is frozen the moment it is taken, so it is equally
+valid as a reference regardless of the video's age today. Only the 24-month
+ceiling applies here.
+
+*Two separate 30-day rules.* Which videos **appear** in the 7-day list: a
+day-7 reading taken in the last 30 days, applied on the final SELECT. Which
+videos form a **baseline**: every day-7 reading within 24 months, no
+recency limit. Collapsing these — by filtering in the numerator instead —
+would compute every median from whichever handful of videos reached day 7
+this month, with no error and a plausible number printed. The two rules
+currently select almost the same set, so both placements return identical
+rows today and the difference only appears as the pool of day-7 readings
+outgrows 30 days.
+
+*Title and thumbnail come from the latest snapshot, not the day-7 one.* The
+numbers are frozen; the display fields are not. Creators edit both after
+publishing, and reading them from the day-7 row would mean the same video
+showing a different thumbnail under each window, which reads as a bug.
+
 **90-day window:** views at ~90 days / the channel's median ~90-day views —
 currently the lifetime proxy on both sides, until real 90-day snapshots exist.
 
@@ -490,6 +519,15 @@ Any combination is valid — 24 in total. Example: 7-day + likes + relative +
 long-form ranks long-form videos by how far their day-7 likes exceeded the
 channel's median day-7 likes, among videos that reached day 7 in the last month.
 
+**Two layouts, one vocabulary.** Laptop and wide show every option as a
+visible button row. Below laptop each of the four measurement filters
+collapses to a single control showing its current value, four across in one
+row, each keeping the same uppercase caption it has on desktop. Captions are
+never shortened and option wording is byte-identical across breakpoints —
+"90-day window", never "90d". The caption is what makes "Absolute" mean
+something to a first-time visitor; stripped of "COMPARISON" the value reads as
+a fragment. One piece of state holds which panel is open, not one boolean per
+control — five panels able to open at once is where this breaks.
 
 **Format filter is not optional.** Shorts and long-form sit on entirely
 different view scales. Without the split, Shorts dominate every absolute
@@ -701,17 +739,22 @@ thumbnail to link back to the video rather than stand alone. The data
 retention rules remain to be reviewed before a public URL, but they do not
 constrain the front end.
 
-**`avatar_url` is null on every row until the first Monday sweep** — avatars
-are refreshed only on the 90-day run, and the first real Monday is 24 August.
-Cards must render without an avatar rather than treating it as required. This
-is permanent behaviour, not a temporary gap: a newly added channel has no
-avatar until the following Monday either.
+**Cards must render without an avatar rather than treating one as
+required.** All 40 channels currently carry an `avatar_url`, written on
+every collection run. This stays a rendering requirement rather than a
+solved problem: a newly added channel has none until its first run, and a
+channel whose API response carries no thumbnail is skipped deliberately.
 
-**`window` defaults to `90d` rather than `7d` while the 7-day arm of the
-scoring view does not exist.** A bare URL would otherwise open on four empty
-categories, which reads as a broken site rather than as an empty window.
-Revert to `7d` once the 7-day arm is live — it is the trending view and the
-more interesting default for a marketer. One line in `DEFAULT_FILTERS`.
+**`window` defaults to `90d`.** Originally because the 7-day arm did not
+exist and a bare URL would open on four empty categories. The arm exists
+now and the default stays, for a second reason: the 7-day pool covers only
+publications since collection began, so sections run thin — 2 videos in
+triathlete Shorts against 3 card slots — and nearly every score is
+Provisional, because a day-7 baseline is thin by construction this early. A
+first impression of sparse sections and an orange badge on every card is a
+poor one, however honest. Revisit once the pool reaches its rolling
+equilibrium at ~30 days of publications and baselines start clearing 10
+reference videos. One line in `DEFAULT_FILTERS`.
 
 ## Explicitly out of scope
 
@@ -803,12 +846,19 @@ The collection job must:
    than duplicating.
 6. Write a row to `job_runs` recording start, finish, status, row count, and any
    error.
-7. Refresh the materialised view by calling `refresh_scoring_view()`, only
+7. Write each channel's current avatar URL to `channels.avatar_url` on
+   every run, not only on Mondays. Uses `.update().eq()` rather than an
+   upsert, because the NOT NULL constraints on the other columns make a
+   partial upsert fail. Channels whose API response carries no thumbnail
+   are skipped rather than written as null. This step sits *before* the
+   three failure checks, so a failure fetching an avatar cannot affect
+   whether the run's core metrics are published.
+8. Refresh the materialised view by calling `refresh_scoring_view()`, only
    after all three failure checks have passed. A run that failed its checks
    must not publish its data. If the refresh itself fails, the run is failed:
    `status = 'failed'`, an `error_message` naming the refresh, and no ping.
    Runs in every mode, backfill included.
-8. Ping the Healthchecks.io URL as the final action, only on full success.
+9. Ping the Healthchecks.io URL as the final action, only on full success.
 
 **Fail loudly — three checks, all of which must pass for `status = 'success'`.**
 

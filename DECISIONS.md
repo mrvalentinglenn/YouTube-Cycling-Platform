@@ -11,50 +11,174 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-23 (third update)*
+*Last updated: 2026-08-27*
 
-**Collection is unattended.** Daily runs fire on their own at 132–134
-snapshots. Tomorrow, 24 August, is the first real Monday: it should record
-`mode = 'weekly'` with ~400 rows, and it is also the first run to exercise the
-refresh call. Two untried paths in one run.
+**Collection is unattended and has been through a full week.** Daily runs
+fire on their own; the first real Monday, 24 August, recorded
+`mode = 'weekly'` with 1,370 rows across 40 channels in 18 minutes, and
+exercised `refresh_scoring_view()` for the first time. Four successful runs
+since. Daily row counts run 94–134 — the spread is publication volume, not
+coverage: every video published 12–19 August has a day-7 reading, verified
+100% complete against `videos`.
 
-**Scoring is a materialised view.** `scoring_view_live` holds the query, logic
-unchanged; `scoring_view` is the stored copy under the old name, so nothing in
-`frontend/` moved. Three indexes: unique on `(video_id, "window", metric)`,
-plus one per sort column with nulls-last baked in. The case that timed out —
-four categories, long-form — is instant, and `count(*)` returns 11,970
-immediately. Still 90-day arm only. `anon` holds SELECT on the materialised
-view and on `channels`, `videos` and `video_snapshots`; `job_runs` stays
-sealed.
+**Both scoring arms are live.** `scoring_view` holds 12,438 rows: 12,066 on
+the 90-day arm (4,022 videos) and 372 on the 7-day arm (124 videos), each
+video producing one row per metric. The 7-day arm reads the snapshot dated
+exactly 7 days after publication, carries no 30-day baseline floor, and
+takes title and thumbnail from the latest snapshot rather than the frozen
+day-7 row. Baselines are thin by construction this early — long-form pools
+average 7.8 videos, Shorts 3.9 — so 42 of 80 long-form rows and all 44
+Shorts rows are Provisional. 17 rows have no baseline at all, all of them
+channels with a single day-7 video in that format.
 
-**The front end is feature-complete for the prototype.** Both routes carry the
-same filter bar: four measurement filters, then a dividing rule, then search
-and the channel exclusion control. Below laptop the four collapse into
-dropdowns showing their current value under their existing labels; laptop and
-wide keep the full button rows. The category page takes a selection of
-categories at `/category/:categories`, merged into one ranking. The homepage
-shows four bordered sections, top 3 or 5 depending on format and breakpoint,
-each fetching and failing independently.
+**The front end picked up the new arm with no code change**, which is the
+front-end contract working as intended. Verified in the browser: cards
+render, Outlier Score badges read as multiples, Provisional badges appear
+where SQL says they should.
 
-Search is `q` in the URL, a case-insensitive substring match on the title,
-debounced, active on both routes. Titles only — descriptions are not
-collected.
+Data on hand: 4,022 videos across 40 channels, all 40 carrying an
+`avatar_url`.
 
-Branding is in place: "BikeTube — Cycling Content Tracker", left-aligned to the
-content column on both routes.
-
-Verified in the browser at 375px, 768px and desktop rather than assumed.
-
-Data on hand: ~3,970 videos across 40 channels, 11,970 scored rows.
-
-Not built: the 7-day arm of the scoring view, which needs day-7 readings that
-first exist around 26–27 August; filter bar icons; hosting.
+Not built: hosting. Under investigation: avatar images return HTTP 429 from
+`yt3.ggpht.com` when the page requests them — measurement pending before any
+fix.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
 ---
 
 ## Decisions
+
+**2026-08-27 — Avatar images 429 rather than fail; measured before building
+anything.**
+Avatars vanished from most cards. Two diagnoses were reached and both were
+wrong. The first was an extension: the network panel showed
+`ERR_BLOCKED_BY_CLIENT`, and the DOM carried Bitdefender's
+`bis_skin_checked` attributes on every element. Incognito killed that
+theory — extensions are off there and the avatars were still missing. The
+second was referrer policy, on the reasoning that a URL loading in a direct
+tab but failing from the page differs by the `Referer` header. Reading the
+actual response headers killed that one too:
+`Access-Control-Allow-Origin: *`, so Google is explicitly happy to serve
+cross-origin.
+
+The real answer was in the status code nobody had read yet: **429 Too Many
+Requests**, with `Content-Type: text/html` — an error page, not an image.
+Rate limiting, per IP, caused by days of reloading the same site during
+development. The one avatar that did render came from disk cache.
+
+Measured rather than assumed: 20 minutes with the site closed, then a cold
+incognito load of the homepage. All 40 avatars returned. No action.
+
+Two things worth keeping. The proposed fix was one image per channel rather
+than one per video — sound-sounding and already true, since the browser
+deduplicates identical `src` values and a page of 20 Trek cards makes one
+request. The saving being reached for was already there. And two plausible
+causes were diagnosed from the same screenshot before anyone read the status
+code, which is the third time in this file that reading the actual signal
+beat reasoning from the symptom. Storing the images remains the right fix
+if this ever recurs on a page a visitor loaded once — it is also the answer
+to the parked YouTube Terms thumbnail question — but a 429 you caused
+yourself does not justify a storage bucket.
+
+**2026-08-27 — `window` stays at `90d` now the 7-day arm exists, reversing
+the expiry note on the 2026-08-21 default.**
+That entry set `90d` as a temporary default and dated its own reversal: back
+to `7d` once the arm was live, since trending is the more interesting view
+for a marketer. The arm is live and the default stays.
+
+The original reason is gone — the 7-day window no longer returns four empty
+categories. A second one replaced it. The 7-day pool covers only
+publications since collection began, so sections run thin (2 videos in
+triathlete Shorts against 3 card slots) and baselines are thin by
+construction, putting a Provisional badge on nearly every card. A landing
+page of sparse sections and orange badges is a poor first impression however
+honest it is, and this is a portfolio piece whose first impression is the
+product.
+
+Dated rather than permanent, for the same reason the original was: revisit
+once the pool reaches its rolling equilibrium at ~30 days of publications
+and baselines start clearing 10 reference videos. The note about a temporary
+default quietly becoming permanent applies to this entry exactly as it
+applied to the one it supersedes.
+
+**2026-08-27 — The 7-day arm added; two places where matching the 90-day arm
+would have been wrong.**
+Built after four preconditions were checked rather than assumed: the first
+real Monday run succeeded, 124 day-7 readings existed across 27 channels and
+all eight category/format sections, the Shorts HEAD check was still
+classifying correctly, and day-7 coverage was 100% complete for every
+publication date in range.
+
+The arm is a second `union all` block inside `scoring_view_live`, same 16-
+candidate pooling and same column list. Three substantive differences, two
+of which look like copy-paste omissions unless the reasoning is stated.
+
+*No 30-day floor on the baseline.* The 90-day arm floors at 30 days because
+its lifetime proxy has not finished accumulating on a young video. A day-7
+reading is frozen when taken, so it is equally valid regardless of the
+video's age today. This is the 2026-08-19 decision resolved per window,
+arriving in code for the first time.
+
+*Two separate 30-day rules, and the placement of the second is load-bearing.*
+Which videos appear in the list is a 30-day recency rule on the day-7
+reading, applied on the final SELECT. Which videos form a baseline is every
+day-7 reading within 24 months, no recency limit. Filtering in the numerator
+instead would collapse both into one and compute every median from whichever
+handful of videos reached day 7 this month — no error, plausible number, a
+channel in decline compared only against its own decline.
+
+The part worth keeping is that this could not be caught by testing. Every
+day-7 reading in the database is currently inside 30 days, so both
+placements return byte-identical rows today. It would first diverge in
+mid-September, by which point nobody is reading this SQL. Reading the code
+was the only check available, which is the opposite of this project's usual
+method — run it rather than read it — and the exception is worth naming: the
+rule holds when a bug produces different output, not when it produces the
+same output on today's data.
+
+*Title and thumbnail come from the latest snapshot, not the day-7 one.* The
+numbers are deliberately frozen; the display fields are not. Considered
+reading both from the day-7 row, which is simpler and already joined. The
+deciding argument was not that the thumbnail would go stale against YouTube
+but that the same video would show a different thumbnail depending on the
+window filter — the one place the two arms would visibly disagree about the
+same video, and it would read as a bug.
+
+Two findings from applying it. The file's `drop view if exists
+scoring_view_live` at line 1 now fails, because the materialised view
+depends on it — a pre-existing fault the edit exposed rather than caused,
+harmless because it fails loudly. Fixed by dropping the dependent object
+first. And `percentile_cont` returns `double precision` rather than
+`numeric`, so `outlier_score` is a float on both arms; irrelevant for
+ranking and display, but it makes `round(x, 2)` an error without a cast.
+
+Verified after: 372 rows over 124 videos, exactly 3 per video; maximum pool
+size 15 and never 16, which is the off-by-one the 2026-08-21 entry describes
+as invisible in the output shown to be absent; 17 rows with a null score,
+all channels with one day-7 video in that format, where self-exclusion
+correctly leaves nothing.
+
+**2026-08-23 — `avatar_url` written on every run, not only on Mondays.**
+The 2026-08-17 decision that added the column left the write unscheduled.
+Monday was the obvious home, alongside the 90-day sweep — avatars are
+current-state data and refreshing them weekly is ample.
+
+Every run instead, for a reason that has nothing to do with freshness: a
+newly added channel would otherwise have no avatar until the following
+Monday, and the gap is visible on every card that channel appears on. The
+cost of the alternative is one extra field read per channel per run against
+data already being fetched.
+
+Three implementation points worth recording. The write uses `.update()
+.eq()` rather than an upsert, because the NOT NULL constraints on the other
+`channels` columns make a partial upsert fail — an upsert supplies every
+column or none. Channels whose API response carries no thumbnail are
+skipped rather than written as null, so a missing avatar is an absence
+rather than a recorded fact. And the step sits *before* the three failure
+checks, so a failure fetching an avatar cannot affect whether the run's core
+metrics are published — the metrics are the product, the avatar is
+decoration, and they should not share a failure path.
 
 **2026-08-23 — Search added, and the dividing rule turns out to be structural
 rather than a one-off.**
@@ -1739,3 +1863,17 @@ different cause — the four columns were each sized to their own text, and equa
 widths plus a shared label height fixed it without changing a word. Recorded
 because the obvious fix was to the symptom and the actual fault was one layer
 underneath it, which is the third time that pattern has appeared in this file.
+
+**Storing avatar images in a Supabase storage bucket.**
+Proposed when avatars stopped rendering, on the reasoning that serving them
+from our own host removes the dependency on Google's CDN entirely.
+Genuinely attractive — it is also the answer to the parked YouTube Terms
+question on thumbnail handling, and "I host the avatars rather than
+hotlinking Google's CDN" is a better interview answer than the alternative.
+Rejected because the measurement removed the problem: the failures were HTTP
+429s caused by days of development reloading, and a cold incognito load
+after a 20-minute pause returned all 40. A storage bucket, a fetch-and-
+upload step in `collect.py`, and refresh logic for when a channel changes
+its avatar is a session's work against a fault that does not affect anyone
+who loads the page once. Remains the right fix if it ever recurs on a
+visitor's first load. See the 2026-08-27 decision.
