@@ -94,6 +94,51 @@ fix.
 
 ## Decisions
 
+**2026-08-27 — The dead man's switch fired for real; the grace period stays
+at 4 hours.**
+The scheduled run did not happen. Not a failure — an absence: no `job_runs`
+row at all, because the workflow never started and so never reached the code
+that records its own failures. This is the one failure mode `job_runs`
+structurally cannot capture, and the exact case the 2026-08-15 monitoring
+decision was written for. Healthchecks went amber at 07:14 UTC and red at
+11:14, which is how it surfaced.
+
+Cause is unverifiable by design. GitHub leaves no trace of a dropped
+scheduled run — no entry, no log, no notification. The near-certain
+explanation is documented best-effort scheduling under load, consistent with
+every run so far landing 45–90 minutes late. The alternatives do not fit:
+the 60-day inactivity rule needs sixty days without commits and there was a
+push today, and public repos have unlimited Actions minutes.
+
+Recovered by manual dispatch: run 11, `mode = 'daily'` correctly derived
+from the date, 40 channels, 105 rows, all three checks passed. Nothing was
+lost. The 8-day window meant the next run would have re-collected everything
+anyway, and the only real exposure was day-7 precision for videos published
+20 August — which is what the day-8 buffer exists for.
+
+Widening the Healthchecks grace period was considered and rejected. It would
+not make the job more likely to run; it would only delay the report that it
+had not. The 4 hours exists to absorb GitHub's start-time jitter, not to
+tolerate a missing day, and widening it converts a caught failure into a
+later-caught one. The 2026-08-19 reasoning — enough slack for a late start,
+not enough for a lost day to pass unnoticed — stands unchanged.
+
+A second cron entry a few hours after the first was also considered and
+parked rather than rejected. The job is idempotent — `video_snapshots`
+upserts on `(video_id, snapshot_date)` — so a duplicate run is a harmless
+no-op and a dropped first run would be covered by the second. Cost is one
+line and a doubled quota spend still under 1% of the daily allowance. Not
+built on one occurrence in eight days: a retry added to a pipeline that has
+failed once is a guess, and the same discipline that measured the timeout
+and the 429 before acting applies here. Revisit if it recurs within a
+fortnight.
+
+Worth keeping as method, and as an interview answer. The switch was built on
+the argument that error handling cannot catch the job never running. That
+argument was theoretical for twelve days and is now demonstrated. A
+monitoring system that has never fired is indistinguishable from one that
+does not work.
+
 **2026-08-27 — YouTube API Terms reviewed; three conflicts found, accepted
 for a prototype that stays off a public URL.**
 Closes the standing NEXT_STEPS item. Everything collected here is

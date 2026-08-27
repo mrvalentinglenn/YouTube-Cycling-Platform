@@ -74,6 +74,12 @@ verified in the browser. Tailwind v4 is installed. What remains:
       recurs on a page a visitor loaded once, the fix is a Supabase storage
       bucket holding the 40 images, which would also settle the parked
       YouTube Terms question on thumbnail handling.    
+- [ ] Scheduled run dropped by GitHub Actions on 27 August — no `job_runs`
+      row, caught by Healthchecks, recovered by manual dispatch. One
+      occurrence. If it recurs before ~10 September, add a second cron entry
+      a few hours after the first: the job is idempotent, so a duplicate is
+      a no-op and a dropped first run is covered. One line in
+      `.github/workflows/collect.yml`.      
 
 ---
 
