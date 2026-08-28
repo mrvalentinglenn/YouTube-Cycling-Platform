@@ -66,6 +66,17 @@ SHORTS_CHECK_DELAY_SECONDS = 0.2
 # of them history-free".
 VOLUME_CHECK_MIN_RATIO = 0.5
 
+# Avatars are downloaded from YouTube and re-uploaded here rather than
+# hotlinking YouTube's CDN URL — see the write-back loop in main() for why.
+# The bucket already exists in Supabase Storage; this script only writes to
+# it, never creates it.
+AVATAR_STORAGE_BUCKET = "channel-avatars"
+DEFAULT_AVATAR_CONTENT_TYPE = "image/jpeg"
+
+# Which modes actually write avatars back. See the write-back loop in
+# main() for the reasoning — daily deliberately skips this.
+AVATAR_WRITE_BACK_MODES = ("weekly", "backfill")
+
 # ISO 8601 durations from the API look like "PT4M13S" or "PT1H2M3S": the
 # letters mark hours/minutes/seconds and any of the three groups can be
 # absent. This matches each optional group and defaults missing ones to 0
@@ -719,14 +730,16 @@ def main():
     total_head_check_fallbacks = 0
     total_head_check_reclassified = 0
     check_messages = []
-    # (channel_id, avatar_url) pairs collected during the loop below and
-    # written back to `channels` afterwards, one .update() per channel —
-    # see the write-back loop after the channel loop for why update rather
-    # than upsert. Both initialized here (not just inside the try block)
-    # so the summary in `finally` has something to print even if an
-    # exception strikes before the write-back loop is reached.
+    # (channel_id, avatar_url) pairs collected during the loop below —
+    # avatar_url here is still YouTube's own CDN URL at this point, the raw
+    # material for the download/upload/write-back step after the loop, not
+    # yet what gets written to the database. All three counters are
+    # initialized here (not just inside the try block) so the summary in
+    # `finally` has something to print even if an exception strikes before
+    # the write-back step is reached.
     avatar_updates = []
-    avatar_updates_written = 0
+    avatar_uploads_succeeded = 0
+    avatar_uploads_failed = 0
 
     try:
         # The channel list is data, never a hardcoded list — adding a
@@ -788,21 +801,94 @@ def main():
                 f"{stats['pages_fetched']} page(s) fetched"
             )
 
-        # Written back one channel at a time with update(), not upsert:
-        # channels.name and channels.category are NOT NULL, so an upsert
-        # carrying only channel_id and avatar_url would fail the moment it
-        # tried to insert a row rather than match one. update() on a
-        # channel_id that doesn't exist affects zero rows and raises
-        # nothing — the outcome we want here — and a single channel's
-        # failed write is logged and skipped rather than aborting the run,
-        # since this is separate from (and must not affect) the three
-        # fail-loudly checks below.
-        for cid, url in avatar_updates:
-            try:
-                supabase.table("channels").update({"avatar_url": url}).eq("channel_id", cid).execute()
-                avatar_updates_written += 1
-            except Exception as e:
-                print(f"Failed to write avatar_url for {cid}: {e}")
+        # Avatars are current-state data — a channel's profile picture
+        # changes rarely, if at all, between runs — so re-downloading and
+        # re-uploading all 40 on every daily run would be real work with
+        # nothing to show for it 6 days out of 7. This only runs on weekly
+        # (the Monday sweep CLAUDE.md already designates for slow-changing
+        # data like this) and backfill (so a fresh setup isn't left with
+        # zero avatars until the first Monday). collect_channel() still
+        # returns avatar_url on every run regardless of mode — it comes
+        # from the channels.list response Step 1 already makes, so reading
+        # it costs nothing extra — this gate is only about the
+        # download/upload/write step below, which is the actual expense.
+        if resolved_mode in AVATAR_WRITE_BACK_MODES:
+            for cid, youtube_avatar_url in avatar_updates:
+                # Downloaded and re-uploaded into Supabase Storage rather
+                # than writing YouTube's own CDN URL straight into
+                # channels.avatar_url. Two reasons: the front end stops
+                # depending on a third-party host it doesn't control once
+                # this is deployed (that CDN URL could be renamed, expire,
+                # or rate-limit with no warning), and it settles the
+                # thumbnail-handling question CLAUDE.md's API Terms review
+                # still has open — a stored, self-served copy is a
+                # materially different answer than hotlinking YouTube's CDN.
+                try:
+                    download_response = requests.get(youtube_avatar_url, timeout=10)
+                except requests.RequestException as e:
+                    avatar_uploads_failed += 1
+                    print(f"{cid}: avatar download failed — {e}")
+                    continue
+
+                if download_response.status_code != 200:
+                    avatar_uploads_failed += 1
+                    print(
+                        f"{cid}: avatar download returned HTTP "
+                        f"{download_response.status_code}"
+                    )
+                    continue
+
+                content_type = download_response.headers.get(
+                    "Content-Type", DEFAULT_AVATAR_CONTENT_TYPE
+                )
+
+                # upsert: "true" (a string, not a bool — this is an HTTP
+                # header value under the hood) so a channel already having
+                # an avatar overwrites it instead of failing on a path
+                # that already exists.
+                try:
+                    supabase.storage.from_(AVATAR_STORAGE_BUCKET).upload(
+                        path=f"{cid}.jpg",
+                        file=download_response.content,
+                        file_options={"content-type": content_type, "upsert": "true"},
+                    )
+                except Exception as e:
+                    avatar_uploads_failed += 1
+                    print(f"{cid}: avatar upload to storage failed — {e}")
+                    continue
+
+                public_url = supabase.storage.from_(AVATAR_STORAGE_BUCKET).get_public_url(
+                    f"{cid}.jpg"
+                )
+
+                # Only reached once the download and the storage upload
+                # have both already succeeded — any failure above stops
+                # here, before this call, leaving the existing avatar_url
+                # in `channels` exactly as it was. A stale avatar (last
+                # week's photo) is a minor, invisible cosmetic gap; a NULL
+                # or broken URL written over a working one is a visible
+                # regression on every card that channel appears on. One
+                # channel's failure here is logged and skipped, same as
+                # every other per-channel failure in this script — it must
+                # never abort the loop or the run, and is deliberately kept
+                # separate from (and unable to affect) the three
+                # fail-loudly checks below.
+                try:
+                    (
+                        supabase.table("channels")
+                        .update({"avatar_url": public_url})
+                        .eq("channel_id", cid)
+                        .execute()
+                    )
+                    avatar_uploads_succeeded += 1
+                except Exception as e:
+                    avatar_uploads_failed += 1
+                    print(f"{cid}: uploaded but failed to write avatar_url — {e}")
+        else:
+            print(
+                f"Avatar write-back skipped — mode is '{resolved_mode}', "
+                "avatars only refresh on weekly/backfill runs"
+            )
 
         check_messages, check_failures = run_checks(
             channels_read,
@@ -867,7 +953,20 @@ def main():
         print(f"Shorts HEAD checks made: {total_head_checks_made}")
         print(f"HEAD check fallbacks (used duration heuristic): {total_head_check_fallbacks}")
         print(f"Videos reclassified by HEAD check: {total_head_check_reclassified}")
-        print(f"Channel avatars written: {avatar_updates_written}/{len(avatar_updates)} attempted")
+        # Separate success/failure counts, not one combined "attempted"
+        # figure — a run with several avatar failures should be easy to
+        # spot in the summary without reading the per-channel log lines
+        # above. Distinct wording on a skipped (daily) run, rather than
+        # printing "0 succeeded, 0 failed" and leaving it to the reader to
+        # infer that means "didn't run" rather than "ran and found nothing
+        # to do".
+        if resolved_mode in AVATAR_WRITE_BACK_MODES:
+            print(
+                f"Channel avatars: {avatar_uploads_succeeded} uploaded, "
+                f"{avatar_uploads_failed} failed, {len(avatar_updates)} eligible"
+            )
+        else:
+            print(f"Channel avatars: skipped (mode is '{resolved_mode}')")
         print(f"API calls made: {api_calls}")
         print(f"Quota units used: {quota_units}")
         print(f"Duration: {duration_seconds:.1f}s")
