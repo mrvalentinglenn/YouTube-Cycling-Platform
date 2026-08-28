@@ -44,7 +44,12 @@ working rather than a gap.
 A README is committed with a homepage screenshot, and `requirements.txt` is
 generated from the project venv.
 
-Not built: hosting.
+**Deployed on Vercel**, `frontend/` as the root directory, rebuilding on
+every push to `main`. Both routes verified by direct URL entry rather
+than by clicking through — `/category/teams` and the comma-separated
+`/category/teams,influencers` both resolve, and `robots.txt` is served
+as text. The route rewriting needed a `vercel.json` after all; see the
+annotation below.
 
 **Next steps:** See `NEXT_STEPS.md`.
 
@@ -85,6 +90,28 @@ the one requirement that could break the site: every route must rewrite to
 handles that for a Vite SPA without configuration, where the other two need
 a `_redirects` file. Choosing the option that removes a failure mode rather
 than the one that asks me to configure it correctly.
+*Annotated 2026-08-28 — the premise was wrong. Vercel does not rewrite
+SPA routes for a Vite project without configuration. A direct request
+to `/category/teams` on the first deploy returned 404, and the fix was
+`frontend/vercel.json` with a single rewrite of `/(.*)` to
+`/index.html` — the same shape of file Netlify and Cloudflare were
+marked down for needing. The decision stands, since the host is
+deployed and working and there is no reason to move, but it now rests
+on nothing that distinguished it from the other two.
+
+Worth keeping as method rather than as trivia. The conclusion was
+tested and the reasoning was not: had `/category/teams` been reached by
+clicking "Show more" it would have worked, because React Router never
+asks the server for anything. Only a fresh URL entry sends a real
+request for a path with no file behind it — which is precisely the case
+of a recruiter opening a link from an application. A decision's stated
+reason is itself a claim, and this is the second time in this file that
+checking the actual signal beat reasoning from the design.
+
+Incidental confirmation from the same test: `robots.txt` still serves as
+text despite the rewrite matching every path, because Vercel checks for
+a real file before rewriting. Had it not, the file would have returned
+homepage HTML and been silently inert.*
 
 **2026-08-27 — `count: 'exact'` measured after materialising; the exact row
 count stays.**

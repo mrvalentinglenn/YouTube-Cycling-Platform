@@ -820,8 +820,9 @@ key never appears in front-end code.
 
 - **Front end:** Vite + React + React Router, deployed on Vercel as a static
   site with `frontend/` as the root directory. All routes rewrite to
-  `index.html`, without which a direct link to `/category/teams` returns
-  404. `frontend/public/robots.txt` disallows all crawlers: the site is
+  `index.html` via `frontend/vercel.json`, without which a direct link to
+  `/category/teams` returns 404 — Vercel does not do this for a Vite SPA by
+  default. `frontend/public/robots.txt` disallows all crawlers: the site is
   reachable by anyone holding the URL and is deliberately not discoverable
   by anyone who is not. That is a limit on discoverability, not on access —
   see DECISIONS 2026-08-28.
