@@ -818,10 +818,13 @@ key, which bypasses Row Level Security and must only ever run on a machine we
 control. The front end, when it exists, uses the **publishable** key. The secret
 key never appears in front-end code.
 
-- **Front end:** Vite + React + React Router, static hosting. See
-  Front-end architecture below. Hosting provider not yet chosen — any static
-  host works, with one requirement: all routes must rewrite to `index.html`,
-  or a direct link to `/category/teams` returns 404.
+- **Front end:** Vite + React + React Router, deployed on Vercel as a static
+  site with `frontend/` as the root directory. All routes rewrite to
+  `index.html`, without which a direct link to `/category/teams` returns
+  404. `frontend/public/robots.txt` disallows all crawlers: the site is
+  reachable by anyone holding the URL and is deliberately not discoverable
+  by anyone who is not. That is a limit on discoverability, not on access —
+  see DECISIONS 2026-08-28.
 
 ## Collection job requirements
 

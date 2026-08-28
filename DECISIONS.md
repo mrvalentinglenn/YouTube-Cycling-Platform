@@ -52,6 +52,40 @@ Not built: hosting.
 
 ## Decisions
 
+**2026-08-28 — Deployed to a public URL, with `robots.txt` disallowing all
+crawlers.**
+The API Terms review on 2026-08-27 accepted three conflicts — aggregation
+across 40 independent channels, retention beyond 30 days, and the Outlier
+Score as a derived metric — on the grounds that this is a prototype
+demonstrated rather than published. A live URL is a different posture from
+screen-sharing in an interview, so the reasoning is revisited here rather
+than assumed to carry over.
+
+Three options were weighed. Not deploying at all keeps the surface smallest
+and leaves the GitHub repo as the artefact, which is already substantial.
+Password protection removes public access entirely but puts friction in
+front of a recruiter opening a link from an application. Deploying with
+`noindex` sits between them: the link works when sent, and the site is not
+discoverable by anyone not sent it.
+
+Chose the third. A live URL is what makes an application concrete, and a
+portfolio piece nobody can click is doing less work than one they can.
+`robots.txt` costs one file and keeps the site out of search results, which
+is where an unindexed demo differs most from a published product.
+
+Stated plainly rather than dressed up: `robots.txt` is a request, not access
+control. Anyone with the URL can open the site, and a crawler that ignores
+the file will index it anyway. It narrows discoverability, not access, and
+that is the whole of what it does.
+
+Host is Vercel. All three candidates — Vercel, Netlify, Cloudflare Pages —
+are free at this scale and deploy on `git push`, so the decision turned on
+the one requirement that could break the site: every route must rewrite to
+`index.html`, or a direct link to `/category/teams` returns 404. Vercel
+handles that for a Vite SPA without configuration, where the other two need
+a `_redirects` file. Choosing the option that removes a failure mode rather
+than the one that asks me to configure it correctly.
+
 **2026-08-27 — `count: 'exact'` measured after materialising; the exact row
 count stays.**
 Left open when the materialised view landed — the count was never
