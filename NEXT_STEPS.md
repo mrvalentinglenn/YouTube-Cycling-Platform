@@ -9,32 +9,14 @@ lives in DECISIONS.md, not here.
 
 Stages 1–9 complete and deleted. `scripts/collect.py` runs daily on GitHub
 Actions at 06:17 UTC, writes to `videos` and `video_snapshots`, logs every
-execution to `job_runs` with three failure checks, and pings Healthchecks.io
-only on full success. The backfill has run: 3,946 videos across 40 channels.
+execution to `job_runs` with three failure checks, refreshes the
+materialised scoring view, and pings Healthchecks.io only on full success.
+On weekly and backfill runs it also uploads channel avatars to the
+`channel-avatars` bucket in Supabase Storage. The backfill has run; the
+database now holds 4,022 videos across 40 channels.
 
 Collection is live. Nothing further is required to keep it running.
 
-
-
----
-
-## The scoring view — both arms done, materialised
-
-`sql/scoring_view.sql` holds two objects: `scoring_view_live` (the query, tall
-shape, `security_invoker = true`, no ORDER BY) and `scoring_view` (the
-materialised copy the front end reads, with three indexes). Refreshed by
-`collect.py` after its failure checks pass.
-
-Verified: 357 ms for a full `SELECT *` after the baseline was rewritten to
-precompute pools (the first version timed out). Score distribution on
-long-form views — p25 0.56, p50 1.04, p75 1.92, p95 7.21, 2,350 scored rows.
-A median of 1.04 is the baseline calibrating correctly.
-
-**Still to do:**
-
-
-1. [ ] Mirror `scoring_view.sql` into `sql/schema.sql` now the numbers are
-       trusted, so the schema file is a complete description of the database.
 
 ---
 
@@ -73,7 +55,11 @@ verified in the browser. Tailwind v4 is installed. What remains:
       occurrence. If it recurs before ~10 September, add a second cron entry
       a few hours after the first: the job is idempotent, so a duplicate is
       a no-op and a dropped first run is covered. One line in
-      `.github/workflows/collect.yml`.      
+      `.github/workflows/collect.yml`.
+- [ ] Unibet Rose Rockets' avatar is still on YouTube's CDN — its
+      download failed on a connection reset during the 28 August weekly
+      run, so the existing URL was kept rather than overwritten. The next
+      weekly run should pick it up. No action unless it fails again.            
 
 ---
 

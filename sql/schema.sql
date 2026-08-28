@@ -235,3 +235,27 @@ revoke all on videos_readable from anon, authenticated;
 -- anon could not already reach directly (see the historical note on the
 -- anon grants above), not because the exception is free.
 -- ============================================================
+
+-- ================================================================
+-- WHAT THIS FILE DOES NOT CREATE
+--
+-- Running this file alone gives you the four tables, their grants and RLS,
+-- and videos_readable — but not a working database. Two things live
+-- outside it.
+--
+-- 1. sql/scoring_view.sql — run it next. It creates scoring_view_live (the
+--    scoring query), scoring_view (the materialised copy the front end
+--    reads), the three indexes, the anon grant, and refresh_scoring_view().
+--    Deliberately a separate file rather than copied in here: the scoring
+--    logic must live in exactly one place, and two copies in one repo would
+--    drift apart silently. Without it, collect.py collects normally and
+--    then fails on the refresh call, because the function does not exist.
+--
+-- 2. A Storage bucket named `channel-avatars`, set to public, created by
+--    hand in the Supabase dashboard. Storage buckets are not SQL objects,
+--    so no file in this repo can create one. Without it, avatar uploads
+--    fail on every weekly and backfill run, are logged, and the run still
+--    succeeds — because avatar failures are deliberately kept away from the
+--    three failure checks. The result is a working site with no avatars and
+--    no error explaining why.
+-- ================================================================
