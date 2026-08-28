@@ -11,7 +11,46 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-27*
+*Last updated: 2026-08-28*
+
+**Collection is unattended and has been through a full week.** Daily runs
+fire on their own; the first real Monday, 24 August, recorded
+`mode = 'weekly'` with 1,370 rows across 40 channels in 18 minutes, and
+exercised `refresh_scoring_view()` for the first time. The 27 August
+scheduled run was dropped by GitHub Actions — no `job_runs` row at all,
+caught by Healthchecks and recovered by manual dispatch. First real firing
+of the dead man's switch. Daily row counts run 94–134; the spread is
+publication volume, not coverage.
+
+**Both scoring arms are live.** `scoring_view` holds 12,438 rows: 12,066 on
+the 90-day arm (4,022 videos) and 372 on the 7-day arm (124 videos), each
+video producing one row per metric. The 7-day arm reads the snapshot dated
+exactly 7 days after publication, carries no 30-day baseline floor, and
+takes title and thumbnail from the latest snapshot rather than the frozen
+day-7 row. Baselines are thin by construction this early — long-form pools
+average 7.8 videos, Shorts 3.9 — so 42 of 80 long-form rows and all 44
+Shorts rows are Provisional. `count: 'exact'` measured at 0.875 ms, so
+"Page X of Y" stays.
+
+**The front end picked up the new arm with no code change**, which is the
+front-end contract working as intended. Branding is now a single neutral
+mark, "CYCLING CONTENT TRACKER", on both routes.
+
+**Avatars are served from Supabase Storage**, uploaded on weekly and
+backfill runs. 39 of 40 currently on the bucket; Unibet Rose Rockets failed
+on a connection reset and kept its YouTube URL, which is the failure path
+working rather than a gap.
+
+A README is committed with a homepage screenshot, and `requirements.txt` is
+generated from the project venv.
+
+Not built: hosting.
+
+**Next steps:** See `NEXT_STEPS.md`.
+
+---
+
+## Decisions
 
 **2026-08-27 — `count: 'exact'` measured after materialising; the exact row
 count stays.**
@@ -58,41 +97,54 @@ explains itself, there being no page heading above the sections. Declined in
 favour of the single element, which is the more consistent reading of the
 neutrality argument.
 
-**Collection is unattended and has been through a full week.** Daily runs
-fire on their own; the first real Monday, 24 August, recorded
-`mode = 'weekly'` with 1,370 rows across 40 channels in 18 minutes, and
-exercised `refresh_scoring_view()` for the first time. Four successful runs
-since. Daily row counts run 94–134 — the spread is publication volume, not
-coverage: every video published 12–19 August has a day-7 reading, verified
-100% complete against `videos`.
+**2026-08-28 — Avatars stored in Supabase Storage, written on weekly and
+backfill runs only.**
+Built for a different reason than the one NEXT_STEPS recorded, which is
+worth stating rather than smoothing over. That item said to build a storage
+bucket only if the 429s recurred on a page a visitor loaded once. They did
+not. What recurred was the same development-traffic pattern that produced
+the original measurement, and rebuilding on a second observation identical
+to the first would not have been responding to new evidence.
 
-**Both scoring arms are live.** `scoring_view` holds 12,438 rows: 12,066 on
-the 90-day arm (4,022 videos) and 372 on the 7-day arm (124 videos), each
-video producing one row per metric. The 7-day arm reads the snapshot dated
-exactly 7 days after publication, carries no 30-day baseline floor, and
-takes title and thumbnail from the latest snapshot rather than the frozen
-day-7 row. Baselines are thin by construction this early — long-form pools
-average 7.8 videos, Shorts 3.9 — so 42 of 80 long-form rows and all 44
-Shorts rows are Provisional. 17 rows have no baseline at all, all of them
-channels with a single day-7 video in that format.
+The actual reasons are different and did not need the 429 at all.
+Deployment is close, and a deployed site hotlinking a third-party CDN has a
+dependency it does not control — one that has already demonstrated it will
+rate-limit. And it settles the thumbnail half of the YouTube Terms
+question, which had been parked since the review on 2026-08-27. Recorded
+this way because the trigger and the justification came apart, and the
+justification is the honest one.
 
-**The front end picked up the new arm with no code change**, which is the
-front-end contract working as intended. Verified in the browser: cards
-render, Outlier Score badges read as multiples, Provisional badges appear
-where SQL says they should.
+Weekly rather than every run, reversing the 2026-08-23 decision. That
+decision moved the write to every run so a newly added channel would not
+wait until Monday for an avatar. Downloading and uploading 40 images daily
+is real work for data that changes rarely, and the wait is now accepted
+explicitly: a new channel has no avatar until the next weekly run, and the
+cards already render without one. `collect_channel()` still returns the
+avatar URL on every run — it comes from an API response already being
+fetched — and only the write-back is gated.
 
-Data on hand: 4,022 videos across 40 channels, all 40 carrying an
-`avatar_url`.
+Failure keeps the existing value. A failed download, a non-200, or a failed
+upload skips that channel without calling `.update()`. A stale avatar beats
+a broken image, and beats overwriting a working URL with nothing. The block
+stays before the three failure checks for the same reason it always did:
+the metrics are the product and the avatar is decoration, so they should
+not share a failure path.
 
-Not built: hosting. Under investigation: avatar images return HTTP 429 from
-`yt3.ggpht.com` when the page requests them — measurement pending before any
-fix.
+Two things from building it. The installed `storage3` version takes
+`"upsert": "true"` as a *string* in `file_options`, because the flag becomes
+an HTTP header rather than a Python argument — a Python `True` looks correct
+and fails at runtime. Reading the installed package's source rather than
+assuming the signature is what caught it. And the first real run had one
+channel fail on a connection reset mid-collection, so 39 of 40 uploaded and
+Unibet Rose Rockets kept its YouTube URL. That is the failure path working:
+one transient network error, one channel skipped, no aborted run and no
+cleared value. Second connection reset this project has logged, after the
+one video in `fix_shorts_classification.py`.
 
-**Next steps:** See `NEXT_STEPS.md`.
-
----
-
-## Decisions
+The bucket is infrastructure that lives outside the repo. It is not in
+`schema.sql` because Storage buckets are not SQL objects, so a rebuild from
+this repo needs it created by hand — noted in the README, because without it
+uploads fail quietly and the site comes up with no avatars and no error.
 
 **2026-08-27 — The dead man's switch fired for real; the grace period stays
 at 4 hours.**
@@ -2009,6 +2061,12 @@ upload step in `collect.py`, and refresh logic for when a channel changes
 its avatar is a session's work against a fault that does not affect anyone
 who loads the page once. Remains the right fix if it ever recurs on a
 visitor's first load. See the 2026-08-27 decision.
+*Superseded 2026-08-28 — built, for reasons the original rejection did not
+consider. The measurement stands: the 429s were development traffic, and
+this was never worth building to fix them. What changed is that deployment
+made a third-party CDN dependency undesirable on its own terms, and the
+YouTube Terms review on 2026-08-27 gave it a second justification. Same
+object, different argument. See the decision of 2026-08-28.*
 
 **Filter bar icons from `preview.png`.**
 The mockup put a small icon above each of the four filter labels, and the

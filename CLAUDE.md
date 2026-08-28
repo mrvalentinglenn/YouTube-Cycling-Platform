@@ -743,10 +743,11 @@ retention rules remain to be reviewed before a public URL, but they do not
 constrain the front end.
 
 **Cards must render without an avatar rather than treating one as
-required.** All 40 channels currently carry an `avatar_url`, written on
-every collection run. This stays a rendering requirement rather than a
-solved problem: a newly added channel has none until its first run, and a
-channel whose API response carries no thumbnail is skipped deliberately.
+required.** Avatars are served from Supabase Storage, not from YouTube's
+CDN. This stays a rendering requirement rather than a solved problem: a
+newly added channel has none until the next weekly run, a channel whose API
+response carries no thumbnail is skipped deliberately, and a channel whose
+download or upload fails keeps whatever URL it had before.
 
 **`window` defaults to `90d`.** Originally because the 7-day arm did not
 exist and a bare URL would open on four empty categories. The arm exists
@@ -849,13 +850,29 @@ The collection job must:
    than duplicating.
 6. Write a row to `job_runs` recording start, finish, status, row count, and any
    error.
-7. Write each channel's current avatar URL to `channels.avatar_url` on
-   every run, not only on Mondays. Uses `.update().eq()` rather than an
-   upsert, because the NOT NULL constraints on the other columns make a
-   partial upsert fail. Channels whose API response carries no thumbnail
-   are skipped rather than written as null. This step sits *before* the
-   three failure checks, so a failure fetching an avatar cannot affect
-   whether the run's core metrics are published.
+7. On `weekly` and `backfill` runs only, download each channel's avatar
+   from YouTube and upload it to the public `channel-avatars` bucket in
+   Supabase Storage at `{channel_id}.jpg`, then write the bucket's public
+   URL to `channels.avatar_url`. Daily runs skip this step and log the
+   skip.
+
+   Stored rather than hotlinked so the deployed site does not depend on a
+   third-party CDN, which was returning 429s under load; it also settles
+   the thumbnail half of the YouTube Terms question. Weekly rather than
+   daily because avatars are current-state data that changes rarely.
+   Consequence accepted: a newly added channel has no avatar until the
+   next weekly run.
+
+   The write uses `.update().eq()` rather than an upsert, because the NOT
+   NULL constraints on the other `channels` columns make a partial upsert
+   fail. A failed download, a non-200 response, or a failed upload skips
+   that channel without calling `.update()`, so the existing value
+   survives — a stale avatar beats a broken image, and beats overwriting a
+   working URL with nothing. Channels whose API response carries no
+   thumbnail are skipped rather than written as null.
+
+   This step sits *before* the three failure checks, so a storage problem
+   cannot affect whether the run's core metrics are published.
 8. Refresh the materialised view by calling `refresh_scoring_view()`, only
    after all three failure checks have passed. A run that failed its checks
    must not publish its data. If the refresh itself fails, the run is failed:

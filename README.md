@@ -87,9 +87,18 @@ SUPABASE_SECRET_KEY=
 
 `HEALTHCHECKS_URL` is deliberately left out of the local `.env`. It belongs in GitHub Secrets only — a manual test run from a laptop must not be able to ping the monitor and silence an alarm about the *scheduled* job having failed.
 
+
+
 ### Database
 
-Run `sql/schema.sql` then `sql/scoring_view.sql` in the Supabase SQL editor, in that order.
+Run `sql/schema.sql` then `sql/scoring_view.sql` in the Supabase SQL editor,
+in that order.
+
+Then create a Storage bucket named `channel-avatars`, set to public. Channel
+avatars are downloaded from YouTube and served from there rather than
+hotlinked. The bucket is not created by either SQL file — Storage buckets
+are not SQL objects — so it has to be made by hand before the first
+backfill, or every avatar upload fails and `channels.avatar_url` stays null.
 
 ### Collecting data
 
