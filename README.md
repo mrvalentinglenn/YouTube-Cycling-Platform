@@ -1,4 +1,5 @@
 # Cycling Content Tracker
+**[View the live site →]https://you-tube-cycling-platform.vercel.app/**
 
 Finds the YouTube videos that outperformed in cycling and triathlon, so a marketing team can see what is working in the sector without watching forty channels by hand.
 
@@ -56,7 +57,18 @@ Every architectural and scoping choice is recorded in [`DECISIONS.md`](DECISIONS
 
 ## Status
 
-Prototype, running locally. The collection job has been unattended since August 2026 and holds around 4,000 videos across 40 channels. Not deployed to a public URL — see `DECISIONS.md` for the review that settled that.
+Prototype, deployed and collecting. The collection job has been unattended
+since August 2026 and holds around 4,000 videos across 40 channels.
+
+The site is live on Vercel and `robots.txt` disallows all crawlers, so it
+is reachable by anyone holding the URL and deliberately not discoverable by
+anyone who is not. That is a limit on discoverability rather than on
+access, and it follows a review of YouTube's API Terms — see `DECISIONS.md`
+for both.
+
+The site is [live on Vercel](https://you-tube-cycling-platform.vercel.app) and `robots.txt`
+disallows all crawlers, so it is reachable by anyone holding the URL and
+deliberately not discoverable by anyone who is not.
 
 ---
 
@@ -125,7 +137,8 @@ npm run dev
 scripts/collect.py            collection job
 sql/schema.sql                tables, grants, RLS
 sql/scoring_view.sql          scoring logic and the materialised view
-frontend/                     Vite + React + Tailwind
+frontend/                     Vite + React + Tailwind (see frontend/README.md)
+frontend/vercel.json          SPA route rewriting
 .github/workflows/collect.yml daily schedule
 ```
 

@@ -26,19 +26,6 @@ Scaffold, data layer, filter bar, video card and category grid are built and
 verified in the browser. Tailwind v4 is installed. What remains:
 
 
-
-1. [ ] Replace Vite's default `frontend/README.md` with something
-       project-specific. It is the file someone opens after the root
-       README, so it wants a few honest paragraphs about the front end
-       itself — the stack, the two routes, how filter state lives in the
-       URL, and how to run it locally. ~20–30 minutes.
-2. [ ] Add `frontend/.env.example` holding `VITE_SUPABASE_URL` and
-       `VITE_SUPABASE_PUBLISHABLE_KEY`. Vercel reads `.env.example` to
-       pre-fill environment variables when a project is imported, found
-       only the root one, and offered `SUPABASE_SECRET_KEY` as a variable
-       to set on a static front end. The boxes were empty and the names
-       carry no `VITE_` prefix, so nothing could have leaked — but the
-       correct two were not offered either. ~5 minutes.
 ---
 
 ## Small things, whenever
