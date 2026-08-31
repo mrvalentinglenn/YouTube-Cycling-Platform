@@ -38,11 +38,15 @@ Healthchecks cannot see this. It measures from the last ping rather than
 against a clock, so each late run resets the timer to its own hour and the
 deadline walks forward with the drift.
 
-**Today's 31 August run had not appeared as of 10:30 UTC.** It is a Monday,
-so it should derive `weekly` and write ~1,300 rows. A Monday row at ~100
-would mean the run executed and derived `daily`; check 3 compares against
-the last successful run of the same weekday *and mode*, so it would take the
-wrong reference and pass.
+**The 31 August weekly run landed at 14:02 UTC**, 7h45m late — `mode =
+'weekly'`, 40 channels, 1,345 rows, between the previous two Mondays at
+1,370 and 1,301. Five consecutive days of drift now, scattered between
+5h42m and 12h31m with no trend either way. Today came within 9h58m of
+midnight UTC.
+
+**All 40 avatars are now on Supabase Storage.** Unibet Rose Rockets
+recovered on this run without intervention, which is the skip-on-failure
+path working as designed.
 
 **Front end.** `frontend/README.md` replaced with a reader's guide covering
 the stack, the two routes, URL-as-state, the three silent failure modes in
