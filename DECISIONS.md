@@ -11,51 +11,102 @@ Move things out of **Open questions** into Decisions once settled. Add to
 
 ## Current state
 
-*Last updated: 2026-08-28*
+*Last updated: 2026-08-31*
 
-**Collection is unattended and has been through a full week.** Daily runs
-fire on their own; the first real Monday, 24 August, recorded
-`mode = 'weekly'` with 1,370 rows across 40 channels in 18 minutes, and
-exercised `refresh_scoring_view()` for the first time. The 27 August
-scheduled run was dropped by GitHub Actions — no `job_runs` row at all,
-caught by Healthchecks and recovered by manual dispatch. First real firing
-of the dead man's switch. Daily row counts run 94–134; the spread is
-publication volume, not coverage.
+**Collection is unattended and has run every day since 20 August.** No
+missing dates, every run `success`, `channels_processed` 40 throughout.
+Daily counts run 94–134; the two `weekly` runs wrote 1,370 and 1,301.
 
-**Both scoring arms are live.** `scoring_view` holds 12,438 rows: 12,066 on
-the 90-day arm (4,022 videos) and 372 on the 7-day arm (124 videos), each
-video producing one row per metric. The 7-day arm reads the snapshot dated
-exactly 7 days after publication, carries no 30-day baseline floor, and
-takes title and thumbnail from the latest snapshot rather than the frozen
-day-7 row. Baselines are thin by construction this early — long-form pools
-average 7.8 videos, Shorts 3.9 — so 42 of 80 long-form rows and all 44
-Shorts rows are Provisional. `count: 'exact'` measured at 0.875 ms, so
-"Page X of Y" stays.
+**The schedule has drifted badly since 27 August and the cause is not in
+this repo.** Runs 22–26 August landed 45–75 minutes after the 06:17 UTC
+cron, which is the documented scheduler jitter. The four runs since have
+landed 5h42m to 12h31m late. Every one is marked `Scheduled` on GitHub, so
+manual dispatches are not masking a dead schedule; `git log` shows
+`collect.yml` untouched since Step 9, so the cron was not edited. That
+leaves GitHub's own scheduler, which publishes no status and left no trace
+of the 27 August drop either.
 
-**The front end picked up the new arm with no code change**, which is the
-front-end contract working as intended. Branding is now a single neutral
-mark, "CYCLING CONTENT TRACKER", on both routes.
+Nothing has been lost — every date has a row, and a snapshot taken later in
+the day differs only in holding a few more hours of views. The exposure is
+midnight UTC. A run delayed past it writes to the next calendar date, and on
+a Monday `collect.py` would then derive `daily` and skip the 90-day sweep
+and the avatar upload for that week. All three failure checks would pass and
+Healthchecks would ping, so nothing would report it. The closest approach so
+far was 28 August, 5h12m short.
 
-**Avatars are served from Supabase Storage**, uploaded on weekly and
-backfill runs. 39 of 40 currently on the bucket; Unibet Rose Rockets failed
-on a connection reset and kept its YouTube URL, which is the failure path
-working rather than a gap.
+Healthchecks cannot see this. It measures from the last ping rather than
+against a clock, so each late run resets the timer to its own hour and the
+deadline walks forward with the drift.
 
-A README is committed with a homepage screenshot, and `requirements.txt` is
-generated from the project venv.
+**Today's 31 August run had not appeared as of 10:30 UTC.** It is a Monday,
+so it should derive `weekly` and write ~1,300 rows. A Monday row at ~100
+would mean the run executed and derived `daily`; check 3 compares against
+the last successful run of the same weekday *and mode*, so it would take the
+wrong reference and pass.
 
-**Deployed on Vercel**, `frontend/` as the root directory, rebuilding on
-every push to `main`. Both routes verified by direct URL entry rather
-than by clicking through — `/category/teams` and the comma-separated
-`/category/teams,influencers` both resolve, and `robots.txt` is served
-as text. The route rewriting needed a `vercel.json` after all; see the
-annotation below.
+**Front end.** `frontend/README.md` replaced with a reader's guide covering
+the stack, the two routes, URL-as-state, the three silent failure modes in
+the view query, and the `vercel.json` rewrite. `frontend/.env.example` gained
+a comment block excluding the secret key. The root README's Status section
+corrected — it still said the project was not deployed — and the live URL
+added.
 
 **Next steps:** See `NEXT_STEPS.md`.
-
 ---
 
 ## Decisions
+
+**2026-08-31 — The live URL is published in the README; discoverable through
+the repo, deliberately.**
+The 2026-08-28 deployment decision reasoned about a link sent directly in an
+application, and chose `robots.txt` on the grounds that the site should work
+when sent and not be discoverable by anyone not sent it. Putting the URL in
+the root README changes that. GitHub is indexed and the repo is public, so
+the link is now reachable by anyone who finds the repository — a wider
+posture than that entry assumed, reached by adding a line rather than by
+deciding anything.
+
+Accepted on the same argument the original decision made. A portfolio piece
+nobody can click is doing less work than one they can, and the repository is
+itself the artefact being shown — someone who finds it and follows the link
+is exactly the reader this is for. The audience that could plausibly arrive
+this way is small and is the intended one.
+
+`robots.txt` stays. It still keeps the site itself out of search results,
+which is where an unindexed demo differs most from a published product. What
+it no longer does is limit who can find the URL, since the URL now sits in an
+indexed file. Stated rather than left implicit: after this change
+`robots.txt` narrows the site's own discoverability and nothing else.
+
+**2026-08-31 — `frontend/.env.example` documented rather than created; the
+NEXT_STEPS item's stated cause was wrong.**
+The item said Vercel offered `SUPABASE_SECRET_KEY` during import because it
+found only the root `.env.example`, and prescribed creating one in
+`frontend/`. Checking before writing the commit message showed the file was
+already there — committed on 2026-08-21 with the scaffold, holding the
+correct two `VITE_` variables. So Vercel read the root file *despite* the
+frontend one existing, which means its import scan reads the repository root
+regardless of the configured root directory.
+
+The prescribed fix could therefore never have worked, and creating a file
+that already existed would have closed the item while leaving the behaviour
+unchanged. Nothing was at risk either way: the offered boxes were empty and
+the names carry no `VITE_` prefix, so no value could have reached the
+browser.
+
+What was actually added is a comment block naming the secret key as
+excluded, above the two variables. Real but different value — a comment is
+read by a person setting the project up, and says why an absence is
+deliberate rather than an oversight. It does not stop Vercel offering the
+wrong variable on a future import.
+
+Recorded because the item is now deleted from NEXT_STEPS, so without this
+entry the false premise would be the only surviving account. Third instance
+of the pattern this file already names — the Vercel SPA rewrite and the
+avatar 429 were both conclusions whose stated reasoning had gone untested.
+First time it was caught before acting rather than after: the check cost one
+`git log` and the alternative was a commit message asserting a fix that had
+not occurred.
 
 **2026-08-28 — Deployed to a public URL, with `robots.txt` disallowing all
 crawlers.**

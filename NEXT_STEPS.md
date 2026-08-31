@@ -42,12 +42,33 @@ verified in the browser. Tailwind v4 is installed. What remains:
 - [ ] Red Bull Bike returns 6 long-form baseline videos against ~18 visible on
       the channel. Cause is understood and not a bug — see DECISIONS. No action
       unless it is still thin in a month.
-- [ ] Scheduled run dropped by GitHub Actions on 27 August — no `job_runs`
-      row, caught by Healthchecks, recovered by manual dispatch. One
-      occurrence. If it recurs before ~10 September, add a second cron entry
-      a few hours after the first: the job is idempotent, so a duplicate is
-      a no-op and a dropped first run is covered. One line in
-      `.github/workflows/collect.yml`.
+- [ ] GitHub's scheduler has been unreliable since 27 August: one dropped
+      run that day, then four consecutive runs 5h42m to 12h31m late against
+      a 45–75 minute norm. Not the cron and not a manual dispatch masking a
+      dead schedule — both ruled out on 31 August. Nothing lost so far.
+
+      The cost only arrives if a run crosses midnight UTC, because it then
+      writes to the next calendar date. On a Monday that means `collect.py`
+      derives `daily`, the 90-day sweep and the avatar upload are skipped for
+      the week, all three checks pass and Healthchecks pings. Closest
+      approach so far was 28 August, 5h12m short.
+
+      Fix if it recurs: a second cron entry. `17 14 * * 1` protects only the
+      Monday sweep, which is the run carrying irreplaceable weight; a daily
+      second entry protects everything but overwrites each day's snapshot
+      with later-in-day numbers and runs the avatar upload twice on Mondays.
+      The job is idempotent — `video_snapshots` upserts on
+      `(video_id, snapshot_date)` — so a duplicate is a no-op. One line in
+      `.github/workflows/collect.yml`. Note it is a second lottery ticket,
+      not a backstop: the same scheduler queues both.
+
+      A self-checking version that queries `job_runs` and exits if today's
+      work is done is better and is a session's work, not a line — it needs a
+      `job_runs` row shape for "ran, found nothing to do" that check 3 does
+      not then take as its volume reference.
+
+      Decide after the 31 August run lands. Trigger for acting: any run
+      crossing midnight UTC, or the drift persisting past ~10 September.
 - [ ] Unibet Rose Rockets' avatar is still on YouTube's CDN — its
       download failed on a connection reset during the 28 August weekly
       run, so the existing URL was kept rather than overwritten. The next

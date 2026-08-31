@@ -149,7 +149,7 @@ and re-running the same day overwrites rather than duplicates.
 ~1,120 new rows per week: ~720 from the six daily 8-day runs at ~120 each, ~400
 from the Monday 90-day sweep. This table only grows.
 
-Row counts differ by weekday. A Monday run writing ~400 rows is normal; a
+Row counts differ by weekday. A Monday run writing ~1300 rows is normal; a
 Tuesday run writing ~400 is not. `job_runs.snapshots_written` must be read
 against the expected count for that weekday.
 
@@ -173,7 +173,7 @@ that a failed or partial run is visible after the fact.
 | `status` | text | `running` \| `success` \| `failed` |
 | `mode` | text | `daily` \| `weekly` \| `backfill` — the resolved window, not the argument passed |
 | `channels_processed` | integer | Expect 40 |
-| `snapshots_written` | integer | Expect ~400 |
+| `snapshots_written` | integer | Expect ~120 on a daily run, ~1,300 on a Monday |
 | `error_message` | text, null | Populated on failure |
 
 **Write pattern:** insert a row with `status = 'running'` at the start, update it
@@ -240,7 +240,7 @@ uploads playlist before stopping. Nothing else about the run changes.
 
 | Day | Window | Videos in scope | Rows |
 |---|---|---|---|
-| Monday | 90 days | everything still growing | ~400 |
+| Monday | 90 days | everything still growing | ~1,300 |
 | Tue–Sun | 8 days | recent uploads only | ~120/day |
 
 **Why daily.** Weekly collection cannot produce a day-7 reading. A video
@@ -791,7 +791,13 @@ at the start of a session before proposing work.
   by date subtraction, so moving it shifts every score against the existing
   record. The scheduled run passes no `--mode`; only a manual dispatch does. No
   keep-alive workflow is needed — daily runs touch Supabase well inside the free
-  tier's 7-day inactivity pause boundary.
+  tier's 7-day inactivity pause boundary.   The cron is the scheduled time, not the observed one. Runs landed 45–75
+  minutes late through 26 August and 5–12 hours late from 27 August onward,
+  which is GitHub's scheduler rather than anything in this repo. The
+  constant-hour principle still holds as an instruction — do not move the
+  cron — but the snapshots it protects are already drifting, so a `weekly`
+  run delayed past midnight UTC would derive `daily` and silently skip the
+  90-day sweep.
 
 - **Monitoring:** Healthchecks.io dead man's switch. Period 1 day, grace 4 hours
   — a 28-hour window. Pinged only when all three failure checks pass; a failed
