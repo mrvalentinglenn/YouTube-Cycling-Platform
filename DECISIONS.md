@@ -60,6 +60,39 @@ added.
 
 ## Decisions
 
+**2026-09-01 — The Provisional badge is gated on Relative; the spec never said
+so, which is why it shipped ungated.**
+Found by looking at the product rather than at the code: under Absolute, most
+7-day cards carried an orange Provisional badge. Provisional qualifies a
+baseline, and Absolute has no baseline in it — the badge was caveating a number
+that was not on screen and needs no caveat, since a raw view count is complete
+and correct whatever the pool behind it looks like.
+
+The 2026-08-21 entry that placed the badge and the 2026-08-23 entry that
+recoloured it both specify where it sits and what it looks like, and neither
+says when it appears. The Outlier Score badge's own entry states "shown only
+under Relative" explicitly. So this was a gap in the specification rather than
+a departure from it, and the implementation was a faithful reading of what had
+been written down.
+
+Fixed by reusing the existing gate rather than adding a second expression of
+the same idea: `comparison === 'relative' && video.is_provisional`, in
+`VideoCard.jsx`, one line. `comparison` was already a prop, so nothing had to
+be threaded through. Both badges now belong to Relative, which is the simpler
+rule to hold — the score and its qualifier appear and disappear together.
+
+Considered keeping it under Absolute on the grounds that a thin baseline is
+true regardless of what is being ranked. Declined: it is true and it is not
+relevant, and a caveat that appears next to numbers needing no caveat trains
+the reader to stop seeing it. The badge is worth more when it is rarer.
+
+Worth recording as method, since it is a different failure from the ones this
+file usually catches. The recurring pattern here has been a stated reason going
+untested. This is an unstated one — nobody was wrong, nothing was assumed, the
+question was simply never asked. Two documented properties of an element are
+not a specification of it, and the missing third was invisible until the
+product was looked at under a filter combination nobody had thought about.
+
 **2026-08-31 — The live URL is published in the README; discoverable through
 the repo, deliberately.**
 The 2026-08-28 deployment decision reasoned about a link sent directly in an

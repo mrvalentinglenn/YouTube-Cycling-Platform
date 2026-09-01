@@ -561,7 +561,7 @@ tall as its long-form equivalent.
 
 There is no page heading above the sections.
 
-Under Relative comparison, the card also shows the Outlier Score as a multiple. Rank is positional — the front end derives it from the order of the returned rows, not from a column on the view. A "Show more" button navigates to the category page for that category, carrying
+Under Relative comparison, the card also shows the Outlier Score as a multiple and the Provisional badge when the baseline is thin. Rank is positional — the front end derives it from the order of the returned rows, not from a column on the view. A "Show more" button navigates to the category page for that category, carrying
 the current filters and exclusions.
 
 All four categories are always visible on one page — the cross-category view is
@@ -691,7 +691,9 @@ which is not the same as a score of zero: `0.0×` on a video with 40,000
 views reads as a broken product. The Provisional badge covers that case, so
 the card still says something — on the other corner.
 
-**The Provisional badge sits top-right and is orange.** It was originally muted
+**The Provisional badge sits top-right, is orange, and appears only under
+Relative** — the same gate as the Outlier Score badge. Provisional qualifies a
+baseline, and Absolute has no baseline in it. It was originally muted
 and low contrast on the reasoning that a caveat should not compete with the
 score badge opposite. In practice grey-on-thumbnail was unreadable against
 light images, and a caveat nobody can read is not doing its job. It is still
