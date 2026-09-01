@@ -85,7 +85,7 @@ export default function VideoCard({ video, comparison }) {
           </span>
         )}
 
-        {video.is_provisional && (
+        {comparison === 'relative' && video.is_provisional && (
           <span
             title="Provisional Score — baseline drawn from a limited number of reference videos."
             className="absolute top-1 right-1 rounded bg-orange-400 px-1.5 py-0.5 text-[10px] text-neutral-900"
